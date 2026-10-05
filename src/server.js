@@ -7,6 +7,8 @@ import { resolve } from 'node:path';
 import { openDatabase } from './database.js';
 import { recommend } from './recommendation.js';
 import { createMusicBrainz, validMbid } from './musicbrainz.js';
+import { createDiscogs } from './discogs.js';
+import { extendedCatalog } from './extendedCatalog.js';
 
 const derive = promisify(scrypt);
 const hashToken = value => createHash('sha256').update(value).digest('hex');
@@ -25,7 +27,7 @@ async function readJson(req) {
 }
 const publicUser = row => ({ id: row.id, name: row.name, email: row.email, preferences: JSON.parse(row.preferences) });
 
-export function createApp({ databasePath = process.env.DATABASE_PATH || resolve(root, 'data/mamrs.sqlite'), musicBrainz = createMusicBrainz(), secureCookies = process.env.COOKIE_SECURE === 'true' } = {}) {
+export function createApp({ databasePath = process.env.DATABASE_PATH || resolve(root, 'data/mamrs.sqlite'), musicBrainz = createMusicBrainz(), discogs = createDiscogs(), secureCookies = process.env.COOKIE_SECURE === 'true' } = {}) {
   const db = openDatabase(databasePath);
   const attempts = new Map();
   const server = http.createServer(async (req, res) => {
@@ -100,9 +102,9 @@ export function createApp({ databasePath = process.env.DATABASE_PATH || resolve(
       const allSongs = db.prepare('SELECT metadata FROM songs ORDER BY id').all().map(s => JSON.parse(s.metadata));
       const owned = new Set(db.prepare('SELECT song_id FROM user_songs WHERE user_id=?').all(uid).map(r=>r.song_id));
       const annotations = new Map(db.prepare('SELECT * FROM annotations WHERE user_id=?').all(uid).map(r=>[r.song_id,r]));
-      const songs = allSongs.filter(s=>s.source === 'Editorial starter' || owned.has(s.id)).map(s=> {
+      const songs = allSongs.filter(s => s.source === 'Editorial starter' || s.isCatalog || owned.has(s.id)).map(s => {
         const a = annotations.get(s.id);
-        return a ? { ...s, moodScores:Object.fromEntries(JSON.parse(a.moods).map(v=>[v,1])), activityScores:Object.fromEntries(JSON.parse(a.activities).map(v=>[v,1])), tagSource:'Your tags' } : s;
+        return a ? { ...s, moodScores: Object.fromEntries(JSON.parse(a.moods).map(v => [v, 1])), activityScores: Object.fromEntries(JSON.parse(a.activities).map(v => [v, 1])), tagSource: 'Your tags' } : s;
       });
       const options = {
         moods: db.prepare("SELECT name FROM taxonomy WHERE kind='mood' ORDER BY rowid").all().map(r => r.name),
@@ -110,13 +112,49 @@ export function createApp({ databasePath = process.env.DATABASE_PATH || resolve(
         ...Object.fromEntries(['genre', 'artist', 'language'].map(k => [`${k}s`, [...new Set(songs.map(s => s[k]))]])),
       };
       if (req.method === 'GET' && path === '/api/options') return json(200, { ...options, catalogSize: songs.length });
+      if (req.method === 'POST' && path === '/api/catalog/seed-dynamic') {
+        db.exec('BEGIN');
+        let added = 0;
+        try {
+          const insertSong = db.prepare('INSERT OR REPLACE INTO songs(id, metadata) VALUES (?, ?)');
+          const insertUser = db.prepare('INSERT OR IGNORE INTO user_songs(user_id, song_id) VALUES (?, ?)');
+          for (const song of extendedCatalog) {
+            insertSong.run(song.id, JSON.stringify(song));
+            added += insertUser.run(uid, song.id).changes;
+          }
+          db.exec('COMMIT');
+        } catch (err) { db.exec('ROLLBACK'); throw err; }
+        return json(200, { ok: true, added, total: extendedCatalog.length });
+      }
       if (req.method === 'GET' && path === '/api/artists') {
         const query = text(url.searchParams.get('q'), 'artist name', 100);
         if (query.length < 2) fail(400, 'Enter at least two characters.');
-        return json(200, { artists: await musicBrainz.searchArtists(query) });
+        const provider = url.searchParams.get('provider') || 'musicbrainz';
+        if (provider === 'discogs') return json(200, { artists: await discogs.searchArtists(query), provider: 'discogs' });
+        return json(200, { artists: await musicBrainz.searchArtists(query), provider: 'musicbrainz' });
       }
       if (req.method === 'POST' && path === '/api/catalog/import') {
         const data = await readJson(req), offset = data.offset ?? 0;
+        const provider = data.provider || 'musicbrainz';
+        if (provider === 'discogs') {
+          if (!data.artistId || !String(data.artistId).trim()) fail(400, 'Invalid artist or page.');
+          const page = await discogs.recordings(String(data.artistId), Number(offset) || 1);
+          let added = 0;
+          db.exec('BEGIN');
+          try {
+            for (const song of page.songs) {
+              let sid = db.prepare('SELECT song_id FROM discogs_songs WHERE discogs_id=?').get(song.discogsId)?.song_id;
+              if (!sid) {
+                sid = Number(db.prepare('INSERT INTO songs(metadata) VALUES (?)').run('{}').lastInsertRowid);
+                db.prepare('UPDATE songs SET metadata=? WHERE id=?').run(JSON.stringify({ ...song, id: sid }), sid);
+                db.prepare('INSERT INTO discogs_songs VALUES (?,?)').run(song.discogsId, sid);
+              }
+              added += db.prepare('INSERT OR IGNORE INTO user_songs VALUES (?,?)').run(uid, sid).changes;
+            }
+            db.exec('COMMIT');
+          } catch (err) { db.exec('ROLLBACK'); throw err; }
+          return json(200, { added, total: page.total, nextOffset: page.nextOffset, provider: 'discogs' });
+        }
         if (!validMbid(data.artistId) || !Number.isInteger(offset) || offset < 0 || offset > 100000) fail(400, 'Invalid artist or page.');
         const page = await musicBrainz.recordings(data.artistId, offset);
         let added = 0;
@@ -133,7 +171,7 @@ export function createApp({ databasePath = process.env.DATABASE_PATH || resolve(
           }
           db.exec('COMMIT');
         } catch (err) { db.exec('ROLLBACK'); throw err; }
-        return json(200, { added, total:page.total, nextOffset:page.nextOffset });
+        return json(200, { added, total:page.total, nextOffset:page.nextOffset, provider: 'musicbrainz' });
       }
       if (req.method === 'GET' && path === '/api/catalog') {
         const query = (url.searchParams.get('q') || '').toLowerCase().slice(0,100);

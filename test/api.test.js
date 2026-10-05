@@ -115,3 +115,44 @@ test('MusicBrainz imports are paginated, deduplicated and private; annotations p
     assert.ok(!(await a('/recommendations','POST',{})).data.songs.some(s=>s.id===1));
   } finally { await stop(app); }
 });
+
+test('Discogs imports and dynamic catalog seeding work seamlessly with privacy and multi-provider options', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mamrs-discogs-'));
+  const path = join(dir, 'test.sqlite');
+  const discogs = {
+    async searchArtists(q) { return [{ id: '999', name: q, disambiguation: '' }]; },
+    async recordings(id, offset) {
+      return {
+        songs: [{ discogsId: 'd-101', title: 'Discogs Anthem', artist: 'Discogs Artist', genre: 'Electronic', language: 'Unknown', source: 'Discogs', tagSource: 'Unclassified', moodScores: {}, activityScores: {} }],
+        total: 1,
+        nextOffset: null
+      };
+    }
+  };
+  const appInstance = createApp({ databasePath: path, discogs });
+  await new Promise(resolve => appInstance.server.listen(0, '127.0.0.1', resolve));
+  const app = { ...appInstance, url: `http://127.0.0.1:${appInstance.server.address().port}` };
+  const c = client(app);
+
+  try {
+    await c('/register', 'POST', { name: 'Dan', email: 'dan@test.com', password: 'Password123' });
+    const artists = await c('/artists?q=Coldplay&provider=discogs');
+    assert.equal(artists.data.artists[0].id, '999');
+    assert.equal(artists.data.provider, 'discogs');
+
+    const imp = await c('/catalog/import', 'POST', { artistId: '999', provider: 'discogs' });
+    assert.equal(imp.data.added, 1);
+    assert.equal(imp.data.provider, 'discogs');
+
+    const cat = await c('/catalog?q=Anthem');
+    assert.equal(cat.data.songs[0].source, 'Discogs');
+
+    const seed = await c('/catalog/seed-dynamic', 'POST', {});
+    assert.equal(seed.status, 200);
+    assert.ok(seed.data.total >= 200);
+  } finally {
+    await stop(app);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+

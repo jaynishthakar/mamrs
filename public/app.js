@@ -194,26 +194,44 @@ async function loadCatalog(append = false) {
 }
 $('#catalog-search').onsubmit = event=>{event.preventDefault(); loadCatalog();};
 $('#catalog-more').onclick = ()=>loadCatalog(true);
+
+const seedBtn = $('#seed-catalog-button');
+if (seedBtn) {
+  seedBtn.onclick = async () => {
+    seedBtn.disabled = true; seedBtn.textContent = 'Importing 200+ tracks…';
+    try {
+      const res = await api('/catalog/seed-dynamic', { method: 'POST', body: {} });
+      toast(`Added ${res.total} tracks from MusicBrainz & Discogs!`);
+      state.options = await api('/options');
+      await loadCatalog();
+      if (state.started) await generate();
+    } catch (err) { toast(err.message); }
+    finally { seedBtn.disabled = false; seedBtn.textContent = '✦ Add 200+ Tracks (MusicBrainz & Discogs)'; }
+  };
+}
+
 $('#artist-search').onsubmit = async event=>{
   event.preventDefault(); const request = ++artistRequest, userId = state.user?.id;
   const button = event.target.querySelector('button'); button.disabled = true;
-  $('#artist-results').replaceChildren(el('p','loading','Searching MusicBrainz…'));
+  const provider = event.target.elements.provider?.value || 'musicbrainz';
+  const providerLabel = provider === 'discogs' ? 'Discogs' : 'MusicBrainz';
+  $('#artist-results').replaceChildren(el('p','loading',`Searching ${providerLabel}…`));
   try {
-    const { artists } = await api(`/artists?q=${encodeURIComponent(event.target.elements.query.value)}`);
+    const { artists } = await api(`/artists?q=${encodeURIComponent(event.target.elements.query.value)}&provider=${provider}`);
     if (request !== artistRequest || userId !== state.user?.id) return;
     $('#artist-results').replaceChildren();
-    if (!artists.length) $('#artist-results').append(el('p','muted','No artists found. Try another spelling.'));
+    if (!artists.length) $('#artist-results').append(el('p','muted',`No artists found on ${providerLabel}. Try another spelling.`));
     for (const artist of artists) {
       const row = el('div','catalog-track'), info = el('div');
-      info.append(el('strong','',artist.name),el('p','muted',[artist.type,artist.country,artist.disambiguation].filter(Boolean).join(' · ')));
-      const add = el('button','outline','Add 50 recordings'); let offset = 0;
+      info.append(el('strong','',artist.name),el('p','muted',[artist.type,artist.country,artist.disambiguation,providerLabel].filter(Boolean).join(' · ')));
+      const add = el('button','outline',`Add from ${providerLabel}`); let offset = 0;
       add.onclick = async ()=>{
         add.disabled = true; add.textContent = 'Importing…';
         try {
-          const result = await api('/catalog/import',{method:'POST',body:{artistId:artist.id,offset}});
+          const result = await api('/catalog/import',{method:'POST',body:{artistId:artist.id,offset,provider}});
           if (userId !== state.user?.id) return;
-          offset = result.nextOffset; add.textContent = offset === null ? 'All pages imported' : 'Add next 50';
-          toast(`${result.added} recordings added. ${result.total} available for this artist.`);
+          offset = result.nextOffset; add.textContent = offset === null ? 'All pages imported' : 'Add next page';
+          toast(`${result.added} tracks added from ${providerLabel}. ${result.total} available.`);
           state.options = await api('/options'); await loadCatalog();
         } catch(err) { add.textContent = 'Retry import'; toast(err.message); }
         finally { add.disabled = offset === null; }
