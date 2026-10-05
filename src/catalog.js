@@ -1,32 +1,32 @@
-// Fictional metadata and locally synthesized previews, not commercial recordings.
+// Real song titles; genre, language and context labels are editorial starter data.
+// These subjective labels are not MusicBrainz facts or audio analysis.
 export const moods = ['Happy', 'Sad', 'Relaxed', 'Energetic', 'Romantic', 'Stressed'];
 export const activities = ['Study', 'Workout', 'Driving', 'Party', 'Sleep', 'Meditation'];
-const collections = [
-  ['Paper Lanterns', 'Quiet Pages', 'Lo-fi', 76],
-  ['Electric Motion', 'Pulse Theory', 'Electronic', 138],
-  ['Open Roads', 'Westbound', 'Indie', 104],
-  ['After Hours', 'Neon Club', 'Pop', 124],
-  ['Moonlit Windows', 'Luna Field', 'Ambient', 58],
-  ['Still Water', 'Asha Grove', 'Acoustic', 64],
+const entries = [
+  ['Tum Hi Ho', 'Arijit Singh', 'Hindi', 'Bollywood', ['Romantic','Sad'], ['Driving']],
+  ['Channa Mereya', 'Arijit Singh', 'Hindi', 'Bollywood', ['Sad'], ['Driving']],
+  ['Sun Raha Hai (Female Version)', 'Shreya Ghoshal', 'Hindi', 'Bollywood', ['Sad','Relaxed'], ['Study']],
+  ['Saibo', 'Shreya Ghoshal & Tochi Raina', 'Hindi', 'Bollywood', ['Romantic','Relaxed'], ['Study','Driving']],
+  ['Kun Faya Kun', 'A.R. Rahman, Javed Ali & Mohit Chauhan', 'Hindi', 'Bollywood', ['Relaxed','Stressed'], ['Meditation']],
+  ['Jai Ho', 'Sukhwinder Singh, Tanvi Shah, Mahalakshmi Iyer & Vijay Prakash', 'Hindi', 'Bollywood', ['Happy','Energetic'], ['Workout','Party']],
+  ['Sheila Ki Jawani', 'Sunidhi Chauhan & Vishal Dadlani', 'Hindi', 'Bollywood', ['Energetic'], ['Workout','Party']],
+  ['Aaja Nachle', 'Sunidhi Chauhan', 'Hindi', 'Bollywood', ['Happy','Energetic'], ['Party']],
+  ['Kal Ho Naa Ho', 'Sonu Nigam', 'Hindi', 'Bollywood', ['Sad','Romantic'], ['Driving']],
+  ['Abhi Mujh Mein Kahin', 'Sonu Nigam', 'Hindi', 'Bollywood', ['Sad','Relaxed'], ['Study']],
+  ['Yellow', 'Coldplay', 'English', 'Alternative rock', ['Romantic','Relaxed'], ['Driving','Study']],
+  ['A Sky Full of Stars', 'Coldplay', 'English', 'Pop', ['Happy','Energetic'], ['Workout','Party']],
+  ['Someone Like You', 'Adele', 'English', 'Pop', ['Sad','Relaxed'], ['Study']],
+  ['Rolling in the Deep', 'Adele', 'English', 'Pop', ['Energetic'], ['Driving','Workout']],
+  ['Levitating', 'Dua Lipa', 'English', 'Pop', ['Happy','Energetic'], ['Workout','Party']],
+  ["Don't Start Now", 'Dua Lipa', 'English', 'Pop', ['Energetic'], ['Workout','Party']],
+  ['Blinding Lights', 'The Weeknd', 'English', 'Pop', ['Energetic'], ['Driving','Workout']],
+  ['Save Your Tears', 'The Weeknd', 'English', 'Pop', ['Sad'], ['Driving']],
+  ['Shake It Off', 'Taylor Swift', 'English', 'Pop', ['Happy','Energetic'], ['Party','Workout']],
+  ['Love Story', 'Taylor Swift', 'English', 'Country pop', ['Romantic','Happy'], ['Driving']],
 ];
-const titles = ['First Light', 'Soft Focus', 'Golden Hour', 'Slow Bloom', 'Blue Skies', 'Drifting', 'Daydream', 'New Horizons', 'Warm Nights', 'Small Wonders', 'Silver Lining', 'Home Again', 'Quiet Sparks', 'Cloud Nine', 'Sunlit', 'In the Moment', 'Wildflowers', 'Weightless', 'Afterglow', 'Distant Stars', 'A Little Closer', 'Deep Breath', 'Stay Awhile', 'One More Day'];
-export const catalog = collections.flatMap(([album, artist, genre, bpm], a) => titles.map((title, i) => ({
-  id: a * titles.length + i + 1,
-  title: `${title} / ${a + 1}`,
-  artist, album, genre,
-  language: ['Instrumental', 'English', 'Hindi', 'Tamil'][i % 4],
-  duration: 150 + ((i * 13 + a * 7) % 130),
-  year: 2024 + i % 3,
-  bpm: bpm + (i % 5) * 2,
-  moodScores: Object.fromEntries(moods.map((m, j) => [m, ((i + j) % 6) < 3 ? 0.6 + ((i + j) % 3) * 0.2 : 0])),
-  activityScores: { [activities[a]]: 1 },
-  color: ['sage', 'coral', 'sand', 'violet', 'blue', 'rose'][a],
-  previewUrl: `/api/previews/${a * titles.length + i + 1}.wav`,
-  demo: true,
-})));
-export const options = {
-  moods, activities,
-  genres: [...new Set(catalog.map(s => s.genre))],
-  artists: [...new Set(catalog.map(s => s.artist))],
-  languages: [...new Set(catalog.map(s => s.language))],
-};
+export const catalog = entries.map(([title,artist,language,genre,ms,as],i) => ({
+  id: 1001+i, title, artist, language, genre, album: null, duration: null, year: null,
+  moodScores: Object.fromEntries(ms.map(m=>[m,.8])), activityScores: Object.fromEntries(as.map(a=>[a,.8])),
+  color: ['sage','coral','sand','violet','blue','rose'][i%6], source: 'Editorial starter', tagSource: 'Editorial',
+  sourceUrl: `https://musicbrainz.org/search?query=${encodeURIComponent(title+' '+artist)}&type=recording&method=indexed`,
+}));

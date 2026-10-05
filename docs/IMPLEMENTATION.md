@@ -1,127 +1,75 @@
-# MAMRS implementation plan and module scope
+# Recommendation-only core module
 
-## Decision
+## Current scope
 
-Build the **Get Recommended Songs** vertical slice first. It is the central behavior shared by the supplied SRS (sections 3.2–3.4 and 8), class diagram, sequence diagram, activity diagram and DFD process 3.0. Authentication, preferences and ratings provide the minimum surrounding behavior to demonstrate personalized output end to end.
+MAMRS retains its existing visual design and account flow while replacing synthetic recordings and audio previews with real metadata discovery. There is no player, audio generator, preview endpoint or playback action API. Saved mixes are lists of recommendations.
 
-The repository initially contained only a seven-byte README. The supplied PDFs were reviewed separately; they are not replaced or modified by this implementation.
+Implemented: registration/login/logout, preferences, contextual recommendations, artist discovery/import, per-user catalog browsing/search, personal context tags, explainable scores, ratings/helpfulness, saved mixes and recommendation history. Deferred: trained ML, automatic mood detection, catalog administration, playlist item editing, public deployment and relevance evaluation.
 
-The academic demo uses Node.js 24, SQLite and HTML/CSS/JavaScript. This keeps setup to one command and makes each layer readable for a lab presentation. The API can later serve a React frontend, and database access can move to PostgreSQL when shared hosting and concurrent use justify it. Neither change is required to demonstrate the core algorithm.
+## Data flow
 
-## Implemented flow
+1. Search an artist through the server-side MusicBrainz adapter. User selects the correct artist identity.
+2. Browse up to 50 recordings per page and persist recording metadata. A unique MBID mapping prevents repeated provider imports. User-to-song associations keep imported collections separate.
+3. Apply account-specific mood/activity annotations over base metadata. Missing context labels remain unknown.
+4. Filter against every selected context. Never silently replace a selected mood/activity.
+5. Apply preferences, relaxing language → artist → genre filters if fewer than ten candidates remain. Preferences still contribute to score.
+6. Score mood (.28), activity (.25), genre (.12), artist (.10), language (.08), rating history (.12), and helpful feedback (.05). Neutral components use .5. Explicit track feedback overrides related feedback; unrelated Unknown genres do not create similarity.
+7. Select with a soft two-per-credited-artist diversity cap, fill remaining slots if necessary, then display the chosen tracks in score order. Credit strings are currently used for artist matching; collaborators are not normalized into separate preference identities.
+8. Store the result snapshot, and support ratings and saved mixes. A rating requires a prior recommendation for that account.
 
-1. Register or sign in; load the user's saved preferences.
-2. Select one mood and one activity, or accept neutral/general defaults.
-3. Load catalog candidates with positive relevance to both selected contexts.
-4. Apply saved language, artist and genre constraints.
-5. If fewer than ten candidates remain, relax language, then artist, then genre. Stop once ten are available. Never relax the context silently.
-6. Score candidates, sort descending, and use song ID as a deterministic tie-breaker.
-7. Persist the recommendation event, contexts, timestamp and full ranking result.
-8. Display up to ten tracks with metadata and score explanations.
-9. Play a generated preview, submit a rating, save a mix, or change the context.
-10. Use the user's ratings and explicit helpful feedback when ranking future candidates.
-
-## Scoring
-
-All components are in [0,1]. Configurable non-negative weights sum to one and are validated by the engine:
-
-| Component | Weight | Initial implementation |
-| --- | ---: | --- |
-| Mood | .28 | Catalog mood relevance; .5 when no mood selected |
-| Activity | .25 | Catalog activity relevance; .5 for general context |
-| Genre | .12 | 1/0 preferred-genre match; .5 when no preference |
-| Artist | .10 | 1/0 preferred-artist match; .5 when no preference |
-| Language | .08 | 1/0 preferred-language match; .5 when no preference |
-| Rating history | .12 | Mean normalized rating of songs sharing artist or genre; .5 cold start |
-| Feedback | .05 | Mean explicit helpful signal for related songs; .5 cold start |
-
-`score = 100 * sum(weight * component)`.
-
-A rating from 1–5 is normalized with `(rating - 1) / 4`. Free-text comments are retained but not interpreted. These weights are an implementation choice consistent with the conceptual SRS equation, not prescribed values from the documents. Scores are relevance indices, not calibrated probabilities. The current prototype adjusts relevance components from personal feedback; it does not learn the weights themselves (FR-23 is partial).
-
-## Traceability and honest completion status
-
-| Requirements / model | Status | Code / behavior |
-| --- | --- | --- |
-| FR-01, FR-02: register and login/logout | Implemented supporting flow | `server.js`, scrypt, HTTP-only cookies, persistent sessions |
-| FR-03 and preference updates in FR-04 | Implemented subset | Favorite genres, artists, languages; full profile deletion deferred |
-| FR-05, FR-08: mood/activity selection | Implemented | Single selection per group, optional disclosed defaults |
-| FR-06, FR-09: taxonomy administration | Partial | Data-driven taxonomy in DB; no admin interface |
-| FR-07, FR-10: selection timestamps | Partial | Contexts timestamped when recommendations are generated; pre-generation clicks not individually logged |
-| FR-11, FR-12, FR-14: ranking and context changes | Implemented against demo data | Candidate filtering, weighted ranking, automatic UI refresh |
-| FR-13: historical ratings/feedback | Implemented | Account-specific related-song score components |
-| Section 3.4.8: progressive fallback | Implemented | Language, artist, genre; user-visible notices |
-| FR-15, FR-18, FR-20: playlist create/view/delete | Implemented supporting subset | Save the current result set, ownership-checked deletion |
-| FR-16, FR-17, FR-19: playlist item and metadata editing | Deferred | Next playlist module increment |
-| FR-21, FR-22, FR-24: ratings/comments/history | Implemented | Numeric ratings, comments, explicit helpful feedback, rating history |
-| FR-23: dynamic preference weight adjustment | Partial | Personal history affects score components, weights stay configured |
-| Sequence: generate → display → play → record action | Implemented for demo previews | Preview events recorded after browser playback starts |
-| Activity: login → context → rank → result → repeat | Implemented | End-to-end frontend/API flow |
-| DFD user profiles, song preferences, playlists, feedback stores | Implemented subset | SQLite tables and account ownership |
-| NFR: under 3 seconds for 1,000 sessions | Not verified | Functional testing only; no concurrency/load claim |
-| Production security/privacy and availability | Not complete | Public production hardening is a later gate |
-
-## Classes and storage
-
-| Diagram concept | Implementation |
-| --- | --- |
-| User / UserProfile / UserPreference | `users`, hashed password and JSON preference lists |
-| RecommendationEngine | Pure `recommend()` function, independent of HTTP |
-| Recommendation | `recommendations` with user, contexts, time and result snapshot |
-| Song / Artist / Genre / Language / Album | Song metadata JSON inside `songs`; normalization deferred |
-| Mood / Activity | `taxonomy` and catalog relevance maps |
-| Rating / Feedback | One rating per user/song, optional text and helpful value |
-| UserAction | `actions`, preview/rating events |
-| Playlist / PlaylistSong | Relational playlist tables, stable song positions |
+Personal tags take precedence over editorial tags and are never shared with other accounts. A context that is not tagged is excluded when that context is selected, with an explanation and guidance to tag tracks or clear context. No popularity, mood quality, language or audio characteristics are invented for imported recordings.
 
 ## API
 
-All data routes except registration, login and health require the session cookie. Mutations require `X-MAMRS-Request: 1` and authenticated mutations also require `X-CSRF-Token` from login or `/api/me`. JSON bodies use `Content-Type: application/json`.
+All routes except health, login and registration require the session cookie. Mutations require `X-MAMRS-Request: 1`, JSON bodies, and (when authenticated) the session's `X-CSRF-Token`. Existing origin checks and ownership restrictions remain.
 
-| Method | Route | Purpose |
+| Method | Route | Input / purpose |
 | --- | --- | --- |
-| POST | `/api/register` | `{name,email,password}`; starts a session |
-| POST | `/api/login` | `{email,password}`; starts a session |
-| POST | `/api/logout` | Revoke current session |
-| GET | `/api/me` | Current user, preferences and CSRF token |
-| GET | `/api/options` | Available taxonomy and preference values |
+| POST | `/api/register` | `{name,email,password}` |
+| POST | `/api/login` | `{email,password}` |
+| POST | `/api/logout` | Revoke session |
+| GET | `/api/me` | User/preferences/CSRF token |
+| GET | `/api/options` | Per-user catalog preference values and taxonomy |
 | PUT | `/api/preferences` | `{genres:[],artists:[],languages:[]}` |
+| GET | `/api/artists?q=...` | MusicBrainz artist candidates, two-character minimum |
+| POST | `/api/catalog/import` | `{artistId,offset?:0}`; returns added count, total and nextOffset |
+| GET | `/api/catalog?q=...&offset=0` | Local per-user catalog, 50-item pages |
+| PUT | `/api/annotations` | `{songId,moods:[],activities:[]}`; replace personal labels |
 | POST | `/api/recommendations` | `{mood:null|string,activity:null|string}` |
 | GET | `/api/history` | Last 30 recommendation contexts |
 | POST | `/api/ratings` | `{songId,score,comment?,helpful?:0|1|null}` |
-| GET | `/api/ratings` | Current user's rating history |
-| GET | `/api/previews/:id.wav` | Eight-second synthesized audio |
-| POST | `/api/actions` | `{songId,type:"preview"}` |
+| GET | `/api/ratings` | Personal rating history |
 | POST | `/api/playlists` | `{name,songIds:[...]}` |
-| GET | `/api/playlists` | Current user's saved mixes |
-| DELETE | `/api/playlists/:id` | Delete a mix owned by the session user |
-| GET | `/api/health` | Liveness response |
+| GET | `/api/playlists` | Personal saved mixes |
+| DELETE | `/api/playlists/:id` | Ownership-checked deletion |
+| GET | `/api/health` | Liveness |
 
-Inputs are validated server-side. SQL uses prepared parameters. User-generated values are rendered with DOM `textContent`, not inserted as HTML. Other users cannot select a user ID in the API to access another account. Rating an unseen song is rejected. Session tokens are random, stored hashed, expire after seven days and are revoked on logout. Request origin checks, custom request headers and per-session CSRF tokens protect mutations. The demo binds only to loopback by default.
+`/api/previews/:id.wav` and `/api/actions` now return 404 after authentication. The CSP disallows media sources. Source arrows link to MusicBrainz metadata/search pages.
 
-## Acceptance demo
+## Persistence
 
-1. Create an account. Select Relaxed + Study. Generate ten suggestions.
-2. Select Hindi in preferences. Observe the broader-results notice when the language constraint has to be relaxed.
-3. Change activity to Workout. Observe different candidates and updated labels.
-4. Preview a track. Confirm the player identifies it as synthesized demo audio.
-5. Rate a track and give helpful feedback. Observe refreshed scores and a persisted rating in Your ratings.
-6. Save a named mix. Open Saved mixes, play a preview, then revisit a context through Recent moments.
-7. Sign out and sign back in. Preferences, ratings and mixes remain.
-8. Create a second account. Its playlists, history and ratings begin empty.
+Existing users, sessions, songs, taxonomy, recommendations, ratings, actions, playlists and playlist_songs tables remain. New tables:
 
-## Next increments
+- `provider_songs`: unique recording MBID → local song ID.
+- `user_songs`: account → imported song membership.
+- `annotations`: account/song → personal mood and activity arrays.
 
-1. Replace fictional catalog metadata with a licensed real-song dataset; validate relevance tags and add provider-supplied preview URLs. Keep API credentials on the server. Verify the selected provider's current access and playback restrictions before implementation.
-2. Complete playlist add/remove/rename and profile update/deletion flows, with ownership tests.
-3. Add database migrations and admin taxonomy/catalog management. Normalize artists, genres, languages and mood/activity mappings when importing a real catalog.
-4. Evaluate recommendation relevance with labeled examples. Tune weights and implement the full FR-23 learning behavior only with measurable acceptance criteria.
-5. Prepare shared deployment: PostgreSQL if appropriate, HTTPS, secure cookies, backups, distributed rate limiting/session lifecycle, email verification/recovery, monitoring, and load testing against the SRS target.
+Imports run in a transaction after provider retrieval. Reimporting does not duplicate membership or overwrite personal tags. The old synthetic catalog remains for historical references only. Starter IDs begin at 1001, avoiding the original 1–144 IDs. Provider IDs are allocated above the existing maximum. No destructive migration is required for the previous demo schema.
 
-Full audio streaming, automatic emotion recognition and trained collaborative filtering are outside this initial core module.
+## Provider behavior
 
-## Validation performed
+Use MusicBrainz's documented artist search and artist-linked recording browse endpoints with JSON and `artist-credits+genres`. Requests use an identifying User-Agent, one shared per-process queue, a 1.1-second minimum interval, ten-second fetch timeout, at most twelve distinct queued/in-flight calls, and a bounded ten-minute cache. Concurrent identical requests share one promise. Failed calls are not cached. The UI offers retry and keeps the local collection operational during outages.
 
-`npm test` passed all seven tests on Node 24.19.0. The suite exercises context changes, ranking, ordered fallback, empty/default behavior, feedback effects, invalid weights, and a full HTTP lifecycle with persistent SQLite storage. The integration test checks registration/login/logout, input rejection, request/CSRF protection, unseen-song rating rejection, rating updates, generated WAV structure, preview action logging, playlist ownership, separate user histories, and persistence after server restart.
+Artist search has a ten-result limit; refine the name for ambiguous matches. Recording pages may contain alternate versions and have no popularity guarantee. MBID deduplication does not merge editorial starter entries with imported recordings. Language stays Unknown, and context tags stay empty until supplied by the user. Genres are optional recording-level MusicBrainz metadata.
 
-Frontend JavaScript passes `node --check`. A browser-driven desktop/mobile walkthrough was prepared, but Chromium was unavailable and its download failed in the execution environment. Consequently, visual layout, browser audio playback and the complete browser interaction flow have **not** been verified here. Use the acceptance-demo checklist above before presenting or deploying. No claim is made about load, real-catalog accuracy or production readiness.
+## Verification
+
+`npm test`: 13 passing tests. Coverage includes context constraints, fallback order, diversity, direct/related feedback, missing metadata, import pagination and idempotence, private catalog/tag access, invalid provider input, upstream failures/cache/request spacing, login/CSRF and persisted user data. An integration fixture also verifies old saved songs remain readable and are excluded from new recommendations.
+
+`node --check public/app.js` and `node --check src/server.js` pass. Live MusicBrainz access failed from the build environment. No browser executable was available, so a desktop/mobile walkthrough is still required.
+
+Suggested walkthrough: create account → generate starter suggestions → search/import an artist → filter Your catalog → add personal tags → select favorite artist → generate matching context → inspect explanations → rate → save/reopen a mix → sign out/in. Confirm a second account cannot see imports/tags until independently imported, and that no playback controls exist.
+
+## Next recommendation work
+
+Collect a small evaluation set of familiar songs and user-labeled contexts; measure whether relevant tracks reach the top ten and track artist coverage. Add normalized artist identities, calibrated tag coverage and optional exploration controls before considering learned models. No recommendation-accuracy or 1,000-session performance claim is made.

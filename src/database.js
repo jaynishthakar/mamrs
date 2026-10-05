@@ -16,6 +16,9 @@ export function openDatabase(path) {
     CREATE TABLE IF NOT EXISTS actions (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), song_id INTEGER REFERENCES songs(id), type TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), name TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS playlist_songs (playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE, song_id INTEGER NOT NULL REFERENCES songs(id), position INTEGER NOT NULL, PRIMARY KEY(playlist_id,song_id));
+    CREATE TABLE IF NOT EXISTS provider_songs (mbid TEXT PRIMARY KEY, song_id INTEGER NOT NULL UNIQUE REFERENCES songs(id));
+    CREATE TABLE IF NOT EXISTS user_songs (user_id INTEGER NOT NULL REFERENCES users(id), song_id INTEGER NOT NULL REFERENCES songs(id), PRIMARY KEY(user_id,song_id));
+    CREATE TABLE IF NOT EXISTS annotations (user_id INTEGER NOT NULL REFERENCES users(id), song_id INTEGER NOT NULL REFERENCES songs(id), moods TEXT NOT NULL, activities TEXT NOT NULL, PRIMARY KEY(user_id,song_id));
     CREATE INDEX IF NOT EXISTS rec_user ON recommendations(user_id,id);
     CREATE INDEX IF NOT EXISTS playlist_user ON playlists(user_id);`);
   const seed = db.prepare('INSERT OR IGNORE INTO songs(id, metadata) VALUES (?,?)');

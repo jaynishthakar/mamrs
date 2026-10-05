@@ -1,5 +1,5 @@
 const $ = selector => document.querySelector(selector);
-const state = { user: null, csrf: '', options: null, mood: null, activity: null, result: null, view: 'discover', generation: 0, ratingSong: null, audioSong: null, started: false };
+const state = { user: null, csrf: '', options: null, mood: null, activity: null, result: null, view: 'discover', generation: 0, ratingSong: null, started: false };
 let authMode = 'register', toastTimer;
 const symbols = { Happy: '☀', Sad: '☂', Relaxed: '≈', Energetic: 'ϟ', Romantic: '♡', Stressed: '〰', Study: '▤', Workout: '↗', Driving: '⌁', Party: '✳', Sleep: '☾', Meditation: '◉' };
 function el(tag, className, content) { const node = document.createElement(tag); if (className) node.className = className; if (content !== undefined) node.textContent = content; return node; }
@@ -7,7 +7,7 @@ function toast(message) { $('#toast').textContent = message; $('#toast').hidden 
 function signedOut() {
   state.generation++; state.started = false; state.user = null; state.csrf = ''; state.result = null; state.mood = null; state.activity = null;
   $('#app-view').hidden = true; $('#auth-view').hidden = false;
-  document.querySelectorAll('dialog[open]').forEach(d => d.close()); closePlayer();
+  document.querySelectorAll('dialog[open]').forEach(d => d.close());
 }
 async function api(path, { method = 'GET', body } = {}) {
   const response = await fetch(`/api${path}`, { method, headers: { 'Content-Type': 'application/json', 'X-MAMRS-Request': '1', 'X-CSRF-Token': state.csrf }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
@@ -44,6 +44,7 @@ async function enter({ user, csrf }) {
   $('#context-note').textContent = 'Choose a mood and activity, or explore with neutral defaults.';
   state.result = null; $('#save-mix').disabled = true; $('#results-title').textContent = 'Your next good listen'; $('#notices').replaceChildren();
   empty($('#results'), 'Every moment has a soundtrack.', 'Set the scene above and discover yours.');
+  $('#artist-results').replaceChildren(); $('#catalog-search').reset();
   await navigate('discover');
 }
 $('#logout').onclick = async () => { try { await api('/logout', { method: 'POST', body: {} }); signedOut(); setAuthMode('login'); } catch (err) { toast(err.message); } };
@@ -65,10 +66,12 @@ function empty(container, title, message) { const box = el('div', 'empty-state')
 function songRow(song, index, allowRating = true) {
   const row = el('div', 'song-row');
   row.append(el('span', 'song-number', String(index + 1).padStart(2, '0')), el('span', `cover ${song.color}`));
-  const info = el('div', 'song-info'); info.append(el('strong', '', song.title), el('small', '', `${song.artist} · ${Math.floor(song.duration / 60)}:${String(song.duration % 60).padStart(2, '0')}`)); row.append(info);
+  const info = el('div', 'song-info'); info.append(el('strong', '', song.title), el('small', '', `${song.artist} · ${song.duration == null ? 'Duration unknown' : Math.floor(song.duration / 60)+':'+String(song.duration % 60).padStart(2, '0')}`)); row.append(info);
   const tags = el('div', 'song-tags', `${song.genre} · ${song.language}`); if (song.reasons) tags.title = song.reasons.join(' • '); row.append(tags);
-  if (allowRating) { const score = el('span', 'score', `${song.score}% match`); score.title = song.reasons.join(' • '); row.append(score); }
-  const play = el('button', 'play-button', '▶'); play.setAttribute('aria-label', `Preview ${song.title}`); play.onclick = () => playSong(song); row.append(play);
+  if (allowRating) { const score = el('span', 'score', `${song.score} pts`); score.title = song.reasons.join(' • '); row.append(score); }
+  const source = el('a', 'source-link', '↗');
+  source.href = song.sourceUrl || 'https://musicbrainz.org'; source.target = '_blank'; source.rel = 'noopener noreferrer'; source.setAttribute('aria-label', `MusicBrainz metadata for ${song.title}`); row.append(source);
+  const details = el('details', 'song-details'); details.append(el('summary', '', 'Why this track?'), el('p', '', (song.reasons || ['Saved from your catalog']).join(' · ')), el('p', '', `${song.source || 'Archived demo'} · ${song.tagSource || 'Legacy'} tags`)); info.append(details);
   if (allowRating) { const rate = el('button', 'rate-button', song.rating ? `★ ${song.rating}/5` : '☆ Rate'); rate.setAttribute('aria-label', `Rate ${song.title}`); rate.onclick = () => openRating(song); row.append(rate); }
   return row;
 }
@@ -94,16 +97,6 @@ async function generate() {
   } finally { if (request === state.generation) { $('#generate').disabled = false; $('#generate').textContent = 'Find my music ↗'; } }
 }
 $('#generate').onclick = generate;
-function closePlayer() { $('#audio').pause(); $('#audio').removeAttribute('src'); $('#audio').load(); $('#player').hidden = true; document.body.classList.remove('playing'); state.audioSong = null; }
-async function playSong(song) {
-  const audio = $('#audio'); state.audioSong = song.id;
-  $('#player-title').textContent = song.title; $('#player-artist').textContent = `${song.artist} · Synthesized demo`;
-  $('#player').hidden = false; document.body.classList.add('playing'); audio.src = song.previewUrl;
-  try { await audio.play(); await api('/actions', { method: 'POST', body: { songId: song.id, type: 'preview' } }); }
-  catch (err) { if (err.name !== 'AbortError') toast(`Preview: ${err.message}`); }
-}
-$('#audio').addEventListener('error', () => { if (state.audioSong) toast('Audio preview could not load. Please sign in again or retry.'); });
-$('#close-player').onclick = closePlayer;
 function openDialog(id) { const dialog = $(id); dialog.querySelector('.dialog-error').textContent = ''; dialog.showModal(); }
 document.querySelectorAll('.close-dialog').forEach(button => { button.onclick = () => button.closest('dialog').close(); });
 $('#preferences-button').onclick = () => {
@@ -149,8 +142,9 @@ async function navigate(view) {
   state.view = view;
   document.querySelectorAll('.view').forEach(n => { n.hidden = n.id !== `${view}-view`; });
   document.querySelectorAll('[data-view]').forEach(n => { n.classList.toggle('active', n.dataset.view === view); if (n.dataset.view === view) n.setAttribute('aria-current', 'page'); else n.removeAttribute('aria-current'); });
-  const names = { discover: 'Discover', playlists: 'Saved mixes', history: 'Recent moments', ratings: 'Your ratings' }; $('#breadcrumb').textContent = `Your space / ${names[view]}`;
+  const names = { discover: 'Discover', playlists: 'Saved mixes', history: 'Recent moments', ratings: 'Your ratings', catalog: 'Your catalog' }; $('#breadcrumb').textContent = `Your space / ${names[view]}`;
   if (view === 'discover') return;
+  if (view === 'catalog') return loadCatalog();
   const container = $(`#${view}-content`); container.replaceChildren(el('div', 'loading', 'Loading your collection…'));
   try {
     const data = await api(`/${view}`);
@@ -173,5 +167,77 @@ async function navigate(view) {
     }
   } catch (err) { empty(container, 'Couldn’t load this page.', err.message); const retry = el('button', 'outline retry', 'Try again'); retry.onclick = () => navigate(view); container.append(retry); }
 }
+let catalogRequest = 0, catalogOffset = null, tagSong = null, artistRequest = 0;
+async function loadCatalog(append = false) {
+  const request = ++catalogRequest, userId = state.user?.id;
+  const q = $('#catalog-search').elements.query.value;
+  $('#catalog-more').hidden = true;
+  if (!append) $('#catalog-content').replaceChildren(el('p', 'loading', 'Loading tracks…'));
+  try {
+    const data = await api(`/catalog?q=${encodeURIComponent(q)}&offset=${append ? catalogOffset : 0}`);
+    if (request !== catalogRequest || userId !== state.user?.id) return;
+    if (!append) $('#catalog-content').replaceChildren();
+    $('#catalog-count').textContent = `${data.total} tracks · Personal tags affect only your recommendations`;
+    for (const song of data.songs) {
+      const row = el('article', 'catalog-track'), info = el('div');
+      info.append(el('strong','',song.title),el('p','muted',song.artist),el('small','',`${song.source} · ${song.tagSource} · ${Object.keys(song.moodScores).join(', ') || 'Mood unclassified'} / ${Object.keys(song.activityScores).join(', ') || 'Activity unclassified'}`));
+      const button = el('button','outline','Edit tags'); button.onclick = ()=>openTags(song);
+      row.append(info,button); $('#catalog-content').append(row);
+    }
+    if (!data.total) empty($('#catalog-content'),'No tracks found.','Try a different search or import an artist above.');
+    catalogOffset = data.nextOffset; $('#catalog-more').hidden = catalogOffset === null;
+  } catch (err) {
+    if (request !== catalogRequest || userId !== state.user?.id) return;
+    toast(err.message); if (!append) empty($('#catalog-content'),'Could not load tracks.', 'Use Find tracks to retry.');
+    else $('#catalog-more').hidden = false;
+  }
+}
+$('#catalog-search').onsubmit = event=>{event.preventDefault(); loadCatalog();};
+$('#catalog-more').onclick = ()=>loadCatalog(true);
+$('#artist-search').onsubmit = async event=>{
+  event.preventDefault(); const request = ++artistRequest, userId = state.user?.id;
+  const button = event.target.querySelector('button'); button.disabled = true;
+  $('#artist-results').replaceChildren(el('p','loading','Searching MusicBrainz…'));
+  try {
+    const { artists } = await api(`/artists?q=${encodeURIComponent(event.target.elements.query.value)}`);
+    if (request !== artistRequest || userId !== state.user?.id) return;
+    $('#artist-results').replaceChildren();
+    if (!artists.length) $('#artist-results').append(el('p','muted','No artists found. Try another spelling.'));
+    for (const artist of artists) {
+      const row = el('div','catalog-track'), info = el('div');
+      info.append(el('strong','',artist.name),el('p','muted',[artist.type,artist.country,artist.disambiguation].filter(Boolean).join(' · ')));
+      const add = el('button','outline','Add 50 recordings'); let offset = 0;
+      add.onclick = async ()=>{
+        add.disabled = true; add.textContent = 'Importing…';
+        try {
+          const result = await api('/catalog/import',{method:'POST',body:{artistId:artist.id,offset}});
+          if (userId !== state.user?.id) return;
+          offset = result.nextOffset; add.textContent = offset === null ? 'All pages imported' : 'Add next 50';
+          toast(`${result.added} recordings added. ${result.total} available for this artist.`);
+          state.options = await api('/options'); await loadCatalog();
+        } catch(err) { add.textContent = 'Retry import'; toast(err.message); }
+        finally { add.disabled = offset === null; }
+      };
+      row.append(info,add); $('#artist-results').append(row);
+    }
+  } catch(err) { if (request === artistRequest && userId === state.user?.id) $('#artist-results').replaceChildren(el('p','error',err.message)); }
+  finally { button.disabled = false; }
+};
+function openTags(song) {
+  tagSong = song; $('#tags-song').textContent = `${song.title} — ${song.artist}`; $('#tags-fields').replaceChildren();
+  for (const [group,key] of [['moods','moodScores'],['activities','activityScores']]) {
+    const field = el('fieldset'); field.append(el('legend','',group==='moods' ? 'Moods' : 'Activities')); const checks = el('div','checkboxes');
+    for (const value of state.options[group]) {
+      const label = el('label'), input = el('input'); input.type='checkbox'; input.name=group; input.value=value; input.checked=!!song[key][value]; label.append(input,document.createTextNode(value)); checks.append(label);
+    }
+    field.append(checks); $('#tags-fields').append(field);
+  }
+  openDialog('#tags-dialog');
+}
+$('#tags-form').onsubmit = event=>submitDialog(event,async form=>{
+  const fields = new FormData(form);
+  await api('/annotations',{method:'PUT',body:{songId:tagSong.id,moods:fields.getAll('moods'),activities:fields.getAll('activities')}});
+  $('#tags-dialog').close(); toast('Personal tags saved.'); await loadCatalog(); if (state.started) await generate();
+});
 function formatDate(value) { return new Date(value.replace(' ', 'T') + 'Z').toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }); }
 try { await enter(await api('/me')); } catch (err) { if (err.message !== 'Please sign in to continue.') $('#auth-error').textContent = err.message; }

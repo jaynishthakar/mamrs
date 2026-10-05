@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { openDatabase } from './database.js';
 import { recommend } from './recommendation.js';
-import { previewWav } from './audio.js';
+import { createMusicBrainz, validMbid } from './musicbrainz.js';
 
 const derive = promisify(scrypt);
 const hashToken = value => createHash('sha256').update(value).digest('hex');
@@ -25,13 +25,13 @@ async function readJson(req) {
 }
 const publicUser = row => ({ id: row.id, name: row.name, email: row.email, preferences: JSON.parse(row.preferences) });
 
-export function createApp({ databasePath = process.env.DATABASE_PATH || resolve(root, 'data/mamrs.sqlite'), secureCookies = process.env.COOKIE_SECURE === 'true' } = {}) {
+export function createApp({ databasePath = process.env.DATABASE_PATH || resolve(root, 'data/mamrs.sqlite'), musicBrainz = createMusicBrainz(), secureCookies = process.env.COOKIE_SECURE === 'true' } = {}) {
   const db = openDatabase(databasePath);
   const attempts = new Map();
   const server = http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; media-src 'none'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     const json = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
     try {
       const url = new URL(req.url, 'http://localhost');
@@ -97,13 +97,60 @@ export function createApp({ databasePath = process.env.DATABASE_PATH || resolve(
         res.setHeader('Set-Cookie', `mamrs_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureCookies ? '; Secure' : ''}`);
         return json(200, { ok: true });
       }
-      const songs = db.prepare('SELECT metadata FROM songs ORDER BY id').all().map(s => JSON.parse(s.metadata));
+      const allSongs = db.prepare('SELECT metadata FROM songs ORDER BY id').all().map(s => JSON.parse(s.metadata));
+      const owned = new Set(db.prepare('SELECT song_id FROM user_songs WHERE user_id=?').all(uid).map(r=>r.song_id));
+      const annotations = new Map(db.prepare('SELECT * FROM annotations WHERE user_id=?').all(uid).map(r=>[r.song_id,r]));
+      const songs = allSongs.filter(s=>s.source === 'Editorial starter' || owned.has(s.id)).map(s=> {
+        const a = annotations.get(s.id);
+        return a ? { ...s, moodScores:Object.fromEntries(JSON.parse(a.moods).map(v=>[v,1])), activityScores:Object.fromEntries(JSON.parse(a.activities).map(v=>[v,1])), tagSource:'Your tags' } : s;
+      });
       const options = {
         moods: db.prepare("SELECT name FROM taxonomy WHERE kind='mood' ORDER BY rowid").all().map(r => r.name),
         activities: db.prepare("SELECT name FROM taxonomy WHERE kind='activity' ORDER BY rowid").all().map(r => r.name),
         ...Object.fromEntries(['genre', 'artist', 'language'].map(k => [`${k}s`, [...new Set(songs.map(s => s[k]))]])),
       };
       if (req.method === 'GET' && path === '/api/options') return json(200, { ...options, catalogSize: songs.length });
+      if (req.method === 'GET' && path === '/api/artists') {
+        const query = text(url.searchParams.get('q'), 'artist name', 100);
+        if (query.length < 2) fail(400, 'Enter at least two characters.');
+        return json(200, { artists: await musicBrainz.searchArtists(query) });
+      }
+      if (req.method === 'POST' && path === '/api/catalog/import') {
+        const data = await readJson(req), offset = data.offset ?? 0;
+        if (!validMbid(data.artistId) || !Number.isInteger(offset) || offset < 0 || offset > 100000) fail(400, 'Invalid artist or page.');
+        const page = await musicBrainz.recordings(data.artistId, offset);
+        let added = 0;
+        db.exec('BEGIN');
+        try {
+          for (const song of page.songs) {
+            let sid = db.prepare('SELECT song_id FROM provider_songs WHERE mbid=?').get(song.mbid)?.song_id;
+            if (!sid) {
+              sid = Number(db.prepare('INSERT INTO songs(metadata) VALUES (?)').run('{}').lastInsertRowid);
+              db.prepare('UPDATE songs SET metadata=? WHERE id=?').run(JSON.stringify({ ...song, id:sid }),sid);
+              db.prepare('INSERT INTO provider_songs VALUES (?,?)').run(song.mbid,sid);
+            }
+            added += db.prepare('INSERT OR IGNORE INTO user_songs VALUES (?,?)').run(uid,sid).changes;
+          }
+          db.exec('COMMIT');
+        } catch (err) { db.exec('ROLLBACK'); throw err; }
+        return json(200, { added, total:page.total, nextOffset:page.nextOffset });
+      }
+      if (req.method === 'GET' && path === '/api/catalog') {
+        const query = (url.searchParams.get('q') || '').toLowerCase().slice(0,100);
+        const offset = Number(url.searchParams.get('offset') || 0);
+        if (!Number.isInteger(offset) || offset < 0) fail(400, 'Invalid page.');
+        const matches = songs.filter(s=>(s.title+' '+s.artist).toLowerCase().includes(query));
+        return json(200, { songs:matches.slice(offset,offset+50), total:matches.length, nextOffset:offset+50 < matches.length ? offset+50 : null });
+      }
+      if (req.method === 'PUT' && path === '/api/annotations') {
+        const data = await readJson(req);
+        if (!songs.some(s=>s.id === data.songId)) fail(400, 'Song does not exist in your catalog.');
+        for (const key of ['moods','activities']) {
+          if (!Array.isArray(data[key]) || data[key].length > options[key].length || !data[key].every(v=>options[key].includes(v))) fail(400, `Invalid ${key}.`);
+        }
+        db.prepare('INSERT INTO annotations VALUES (?,?,?,?) ON CONFLICT(user_id,song_id) DO UPDATE SET moods=excluded.moods,activities=excluded.activities').run(uid,data.songId,JSON.stringify([...new Set(data.moods)]),JSON.stringify([...new Set(data.activities)]));
+        return json(200, { ok:true });
+      }
       if (req.method === 'PUT' && path === '/api/preferences') {
         const data = await readJson(req), prefs = {};
         for (const k of ['genres', 'artists', 'languages']) {
@@ -127,7 +174,7 @@ export function createApp({ databasePath = process.env.DATABASE_PATH || resolve(
         const rows = db.prepare('SELECT id,mood,activity,created_at FROM recommendations WHERE user_id=? ORDER BY id DESC LIMIT 30').all(uid);
         return json(200, { history: rows });
       }
-      if (req.method === 'GET' && path === '/api/ratings') return json(200, { ratings: db.prepare('SELECT * FROM ratings WHERE user_id=? ORDER BY updated_at DESC').all(uid).map(r => ({ ...r, song: songs.find(s => s.id === r.song_id) })) });
+      if (req.method === 'GET' && path === '/api/ratings') return json(200, { ratings: db.prepare('SELECT * FROM ratings WHERE user_id=? ORDER BY updated_at DESC').all(uid).map(r => ({ ...r, song: songs.find(s => s.id === r.song_id) || allSongs.find(s=>s.id===r.song_id) })) });
       if (req.method === 'POST' && path === '/api/ratings') {
         const data = await readJson(req);
         if (!Number.isInteger(data.songId) || !songs.some(s => s.id === data.songId)) fail(400, 'Song does not exist.');
@@ -140,20 +187,8 @@ export function createApp({ databasePath = process.env.DATABASE_PATH || resolve(
         db.prepare("INSERT INTO actions(user_id,song_id,type) VALUES (?,?,'rate')").run(uid, data.songId);
         return json(200, { ok: true });
       }
-      const audioMatch = path.match(/^\/api\/previews\/(\d+)\.wav$/);
-      if (req.method === 'GET' && audioMatch) {
-        const songId = Number(audioMatch[1]); if (!songs.some(s => s.id === songId)) fail(404, 'Preview not found.');
-        const audio = previewWav(songId);
-        res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': audio.length, 'Cache-Control': 'private, max-age=3600' }); return res.end(audio);
-      }
-      if (req.method === 'POST' && path === '/api/actions') {
-        const data = await readJson(req);
-        if (data.type !== 'preview' || !Number.isInteger(data.songId) || !songs.some(s => s.id === data.songId)) fail(400, 'Invalid action.');
-        db.prepare('INSERT INTO actions(user_id,song_id,type) VALUES (?,?,?)').run(uid, data.songId, data.type);
-        return json(201, { ok: true });
-      }
       if (req.method === 'GET' && path === '/api/playlists') {
-        const playlists = db.prepare('SELECT * FROM playlists WHERE user_id=? ORDER BY id DESC').all(uid).map(p => ({ ...p, songs: db.prepare('SELECT song_id FROM playlist_songs WHERE playlist_id=? ORDER BY position').all(p.id).map(r => songs.find(s => s.id === r.song_id)) }));
+        const playlists = db.prepare('SELECT * FROM playlists WHERE user_id=? ORDER BY id DESC').all(uid).map(p => ({ ...p, songs: db.prepare('SELECT song_id FROM playlist_songs WHERE playlist_id=? ORDER BY position').all(p.id).map(r => songs.find(s => s.id === r.song_id) || allSongs.find(s=>s.id===r.song_id)) }));
         return json(200, { playlists });
       }
       if (req.method === 'POST' && path === '/api/playlists') {
