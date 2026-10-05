@@ -1,3 +1,5 @@
+import { mountPreferencesReact } from './PreferencesReact.js';
+
 const $ = selector => document.querySelector(selector);
 const state = { user: null, csrf: '', options: null, mood: null, activity: null, result: null, view: 'discover', generation: 0, ratingSong: null, started: false };
 let authMode = 'register', toastTimer;
@@ -100,23 +102,28 @@ $('#generate').onclick = generate;
 function openDialog(id) { const dialog = $(id); dialog.querySelector('.dialog-error').textContent = ''; dialog.showModal(); }
 document.querySelectorAll('.close-dialog').forEach(button => { button.onclick = () => button.closest('dialog').close(); });
 $('#preferences-button').onclick = () => {
-  const container = $('#preferences-fields'); container.replaceChildren();
-  for (const key of ['genres', 'artists', 'languages']) {
-    const field = el('fieldset'); field.append(el('legend', '', `Favorite ${key}`)); const checks = el('div', 'checkboxes');
-    state.options[key].forEach(value => { const label = el('label'); const input = el('input'); input.type = 'checkbox'; input.name = key; input.value = value; input.checked = (state.user.preferences[key] || []).includes(value); label.append(input, document.createTextNode(value)); checks.append(label); });
-    field.append(checks); container.append(field);
-  }
+  const container = $('#preferences-fields');
+  mountPreferencesReact({
+    container,
+    options: state.options,
+    initialPreferences: state.user.preferences,
+    onSave: async (preferences) => {
+      await api('/preferences', { method: 'PUT', body: preferences });
+      state.user.preferences = preferences;
+      $('#preferences-dialog').close();
+      toast('Preferences saved.');
+      if (state.started) await generate();
+    },
+    onClose: () => {
+      $('#preferences-dialog').close();
+    }
+  });
   openDialog('#preferences-dialog');
 };
 async function submitDialog(event, task) {
   event.preventDefault(); const form = event.target, button = form.querySelector('button.primary'); button.disabled = true; form.querySelector('.dialog-error').textContent = '';
   try { await task(form); } catch (err) { form.querySelector('.dialog-error').textContent = err.message; } finally { button.disabled = false; }
 }
-$('#preferences-form').onsubmit = event => submitDialog(event, async form => {
-  const fields = new FormData(form), preferences = Object.fromEntries(['genres', 'artists', 'languages'].map(k => [k, fields.getAll(k)]));
-  await api('/preferences', { method: 'PUT', body: preferences }); state.user.preferences = preferences;
-  $('#preferences-dialog').close(); toast('Preferences saved.'); if (state.result) await generate();
-});
 async function openRating(song) {
   state.ratingSong = song; $('#rating-form').reset(); $('#rating-song').textContent = `${song.title} — ${song.artist}`;
   openDialog('#rating-dialog');

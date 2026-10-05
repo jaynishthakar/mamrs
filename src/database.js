@@ -2,8 +2,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { catalog, moods, activities } from './catalog.js';
+import { createPgDatabase } from './pgDatabase.js';
 
-export function openDatabase(path) {
+export function openDatabase(path = process.env.DATABASE_URL || ':memory:') {
+  if (typeof path === 'string' && (path.startsWith('postgres://') || path.startsWith('postgresql://'))) {
+    return createPgDatabase(path);
+  }
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec(`PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;
