@@ -1,0 +1,9 @@
+{
+  "name": "mamrs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mood and Action-Based Music Recommendation System",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": { "start": "node src/server.js", "test": "node --test", "dev": "node --watch src/server.js" }
+}
