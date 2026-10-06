@@ -99,7 +99,12 @@ async function generate() {
   } finally { if (request === state.generation) { $('#generate').disabled = false; $('#generate').textContent = 'Find my music ↗'; } }
 }
 $('#generate').onclick = generate;
-function openDialog(id) { const dialog = $(id); dialog.querySelector('.dialog-error').textContent = ''; dialog.showModal(); }
+function openDialog(id) {
+  const dialog = $(id);
+  const err = dialog.querySelector('.dialog-error');
+  if (err) err.textContent = '';
+  dialog.showModal();
+}
 document.querySelectorAll('.close-dialog').forEach(button => { button.onclick = () => button.closest('dialog').close(); });
 $('#preferences-button').onclick = () => {
   const container = $('#preferences-fields');
