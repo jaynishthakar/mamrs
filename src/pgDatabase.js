@@ -22,9 +22,11 @@ export function createPgDatabase(connectionString = process.env.DATABASE_URL) {
       s = s.replace(/insert\s+or\s+replace\s+into\s+songs/i, 'INSERT INTO songs');
       if (!/on\s+conflict/i.test(s)) s += ' ON CONFLICT (id) DO UPDATE SET metadata = EXCLUDED.metadata';
     }
-    // Handle RETURNING id for inserts without RETURNING
+    // Handle RETURNING id only for tables that have an id column
     let needsReturning = false;
-    if (/^\s*insert\s+into/i.test(s) && !/returning/i.test(s)) {
+    const matchTable = s.match(/^\s*insert\s+into\s+([a-zA-Z0-9_]+)/i);
+    const tablesWithId = ['users', 'songs', 'recommendations', 'playlists', 'actions'];
+    if (matchTable && tablesWithId.includes(matchTable[1].toLowerCase()) && !/returning/i.test(s)) {
       needsReturning = true;
       s += ' RETURNING id';
     }
@@ -53,6 +55,9 @@ export function createPgDatabase(connectionString = process.env.DATABASE_URL) {
         CREATE TABLE IF NOT EXISTS annotations (user_id INTEGER NOT NULL REFERENCES users(id), song_id INTEGER NOT NULL REFERENCES songs(id), moods TEXT NOT NULL, activities TEXT NOT NULL, PRIMARY KEY(user_id,song_id));
         CREATE INDEX IF NOT EXISTS rec_user ON recommendations(user_id,id);
         CREATE INDEX IF NOT EXISTS playlist_user ON playlists(user_id);
+        CREATE SEQUENCE IF NOT EXISTS songs_id_seq;
+        SELECT setval('songs_id_seq', GREATEST(COALESCE((SELECT MAX(id) FROM songs), 0), 1000));
+        ALTER TABLE songs ALTER COLUMN id SET DEFAULT nextval('songs_id_seq');
       `);
 
       const countRes = await client.query('SELECT count(*) as count FROM songs');
