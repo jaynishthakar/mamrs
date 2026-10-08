@@ -1,9 +1,9 @@
 import http from 'node:http';
 import { randomBytes, scrypt, timingSafeEqual, createHash } from 'node:crypto';
 import { promisify } from 'node:util';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+import { resolve, extname } from 'node:path';
 import { openDatabase } from './database.js';
 import { recommend } from './recommendation.js';
 import { createMusicBrainz, validMbid } from './musicbrainz.js';
@@ -40,10 +40,27 @@ export function createApp({ databasePath = process.env.DATABASE_URL || process.e
       const path = url.pathname;
       if (!path.startsWith('/api/')) {
         if (req.method !== 'GET') fail(405, 'Method not allowed.');
-        const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'], '/PreferencesReact.js': ['PreferencesReact.js', 'text/javascript'] };
-        const asset = assets[path]; if (!asset) fail(404, 'Page not found.');
-        res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` });
-        return res.end(readFileSync(resolve(root, 'public', asset[0])));
+        const publicDir = resolve(root, 'public');
+        const relativePath = path === '/' ? 'index.html' : path.replace(/^\/+/, '');
+        const target = resolve(publicDir, relativePath);
+        if (!target.toLowerCase().startsWith(publicDir.toLowerCase())) fail(403, 'Forbidden.');
+        if (!existsSync(target) || !statSync(target).isFile()) fail(404, 'Page not found.');
+        const mimes = {
+          '.html': 'text/html; charset=utf-8',
+          '.js': 'text/javascript; charset=utf-8',
+          '.css': 'text/css; charset=utf-8',
+          '.png': 'image/png',
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.svg': 'image/svg+xml; charset=utf-8',
+          '.ico': 'image/x-icon',
+          '.webp': 'image/webp',
+          '.json': 'application/json; charset=utf-8'
+        };
+        const ext = extname(target).toLowerCase();
+        const contentType = mimes[ext] || 'application/octet-stream';
+        res.writeHead(200, { 'Content-Type': contentType });
+        return res.end(readFileSync(target));
       }
       if (req.method === 'GET' && path === '/api/health') return json(200, { ok: true });
       const mutation = ['POST', 'PUT', 'DELETE'].includes(req.method);

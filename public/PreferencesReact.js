@@ -65,7 +65,7 @@ const POPULAR_PRESETS = {
     { name: 'Indie', image: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=360&auto=format&fit=crop&q=80' },
     { name: 'Bollywood', image: 'https://images.unsplash.com/photo-1465847899084-d164df4dedc6?w=360&auto=format&fit=crop&q=80' },
     { name: 'Rock', image: 'https://images.unsplash.com/photo-1498038432885-c6f3f1b912ee?w=360&auto=format&fit=crop&q=80' },
-    { name: 'Hip Hop', image: 'https://images.unsplash.com/photo-1571266028243-3716f02d2d2e?w=360&auto=format&fit=crop&q=80' },
+    { name: 'Hip Hop', image: '/images/hip-hop.png' },
     { name: 'R&B', image: 'https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?w=360&auto=format&fit=crop&q=80' },
   ],
   artists: [
@@ -79,7 +79,7 @@ const POPULAR_PRESETS = {
   languages: [
     { name: 'Hindi', image: 'https://images.unsplash.com/photo-1524492412937-b28074a5d7da?w=360&auto=format&fit=crop&q=80' },
     { name: 'English', image: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=360&auto=format&fit=crop&q=80' },
-    { name: 'Punjabi', image: 'https://images.unsplash.com/photo-1544717305-2782549b5136?w=360&auto=format&fit=crop&q=80' },
+    { name: 'Punjabi', image: '/images/punjabi.png' },
     { name: 'Tamil', image: 'https://images.unsplash.com/photo-1582510003544-4d00b7f74220?w=360&auto=format&fit=crop&q=80' },
     { name: 'Spanish', image: 'https://images.unsplash.com/photo-1543783207-ec64e4d95325?w=360&auto=format&fit=crop&q=80' },
     { name: 'Korean', image: 'https://images.unsplash.com/photo-1538485399081-7191377e8241?w=360&auto=format&fit=crop&q=80' },
