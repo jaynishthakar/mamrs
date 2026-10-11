@@ -95,7 +95,8 @@ export function PreferencesApp({ options = {}, initialPreferences = {}, onSave, 
   const [preferences, setPreferences] = useState({
     genres: initialPreferences?.genres || [],
     artists: initialPreferences?.artists || [],
-    languages: initialPreferences?.languages || []
+    languages: initialPreferences?.languages || [],
+    required: initialPreferences?.required || ['language']
   });
 
   const tabs = [
@@ -144,7 +145,7 @@ export function PreferencesApp({ options = {}, initialPreferences = {}, onSave, 
   };
 
   const resetAll = () => {
-    setPreferences({ genres: [], artists: [], languages: [] });
+    setPreferences({ genres: [], artists: [], languages: [], required: ['language'] });
   };
 
   const totalSelected = (preferences.genres.length + preferences.artists.length + preferences.languages.length);
@@ -334,6 +335,10 @@ export function PreferencesApp({ options = {}, initialPreferences = {}, onSave, 
 
     // 3. Fixed Footer
     React.createElement('div', { className: 'pref-footer' },
+      React.createElement('label', null,
+        React.createElement('input', { type: 'checkbox', checked: preferences.required.includes('language'),
+          onChange: e => setPreferences(p => ({ ...p, required: e.target.checked ? [...new Set([...p.required, 'language'])] : p.required.filter(k => k !== 'language') })) }),
+        ' Keep selected languages required'),
       React.createElement('button', {
         type: 'button',
         className: 'pref-footer-reset',

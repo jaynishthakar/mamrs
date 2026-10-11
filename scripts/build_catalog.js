@@ -281,8 +281,8 @@ const catalog = allRaw.map(([title, artist, language, genre, album, year, durati
     moodScores: Object.fromEntries(ms.map(m => [m, 0.8])),
     activityScores: Object.fromEntries(as.map(a => [a, 0.8])),
     color: colors[i % colors.length],
-    source: provider,
-    tagSource: i < 20 ? 'Editorial' : 'Editorial & Provider',
+    source: 'Editorial starter',
+    tagSource: 'Editorial',
     isCatalog: true,
     sourceUrl,
   };

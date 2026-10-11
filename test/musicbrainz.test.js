@@ -31,3 +31,27 @@ test('upstream failures return retryable errors and are not cached',async()=>{
   await assert.rejects(provider.searchArtists('Artist'),{status:503});
   await assert.rejects(provider.searchArtists('Artist'),{status:503});assert.equal(calls,2);
 });
+
+test('recording enrichment uses work lyrics languages, tags and ISRCs instead of release text language', async () => {
+  const workId = '33333333-3333-3333-3333-333333333333';
+  const calls = [];
+  const provider = createMusicBrainz({ interval: 0, fetcher: async url => {
+    calls.push(url);
+    return { ok: true, json: async () => url.pathname.includes('/work/') ? { id: workId, languages: ['hin'] } : {
+      id, title: 'Recording', 'artist-credit': [{ name: 'Singer', artist: { id, name: 'Singer' } }],
+      isrcs: ['INAAA2600001'], tags: [{ name: 'romantic', count: 4 }],
+      releases: [{ title: 'Album', 'text-representation': { language: 'eng' } }],
+      relations: [{ type: 'performance', work: { id: workId } }]
+    } };
+  } });
+  const out = await provider.track(id);
+  assert.deepEqual(out.workLanguages, ['hin']); assert.equal(out.language, 'Unknown');
+  assert.deepEqual(out.isrcs, ['INAAA2600001']); assert.equal(out.providerTags[0].count, 4);
+  assert.ok(calls[0].searchParams.get('inc').includes('tags'));
+  assert.equal(calls[1].pathname, `/ws/2/work/${workId}`);
+});
+
+test('rate-limit retry-after is preserved for the background scheduler', async () => {
+  const provider = createMusicBrainz({ interval: 0, fetcher: async () => ({ ok: false, status: 429, headers: { get: () => '120' } }) });
+  await assert.rejects(provider.track(id), error => error.status === 503 && error.retryAfterMs === 120000);
+});

@@ -2,14 +2,17 @@ services:
   - type: web
     name: mamrs
     runtime: node
+    branch: main
     plan: free
     region: oregon
-    buildCommand: npm install
+    buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
-        value: 22.14.0
+        value: 22.21.0
+      - key: HOST
+        value: 0.0.0.0
       - key: COOKIE_SECURE
         value: "true"
       - key: DATABASE_URL

@@ -12,14 +12,23 @@ test('context changes results and selected context remains a strict constraint',
   assert.ok(study.songs.every(s => s.moodScores.Relaxed > 0 && s.activityScores.Study > 0));
   assert.ok(study.songs.every((s, i, a) => !i || a[i - 1].score >= s.score));
 });
-test('fallback removes language then artist then genre and stops when ten exist', () => {
+test('language stays required unless explicitly opened to discovery', () => {
   const songs = Array.from({ length: 12 }, (_, i) => sample(i, { language: 'English', artist: 'B' }));
   const out = recommend({ songs, preferences: { languages: ['Hindi'], artists: ['A'], genres: ['Lo-fi'] } });
-  assert.deepEqual(out.relaxed, ['language', 'artist']);
-  assert.equal(out.songs.length, 10);
-  assert.match(out.notices.join(' '), /language, then artist/);
-  const all = recommend({ songs, preferences: { languages: ['Hindi'], artists: ['A'], genres: ['Pop'] } });
-  assert.deepEqual(all.relaxed, ['language', 'artist', 'genre']);
+  assert.deepEqual(out.relaxed, []);
+  assert.equal(out.songs.length, 0);
+  const all = recommend({ songs, preferences: { languages: ['Hindi'], artists: ['A'], genres: ['Pop'], required: [] } });
+  assert.equal(all.songs.length, 10);
+  assert.equal(all.discoveryCount, 10);
+});
+
+test('collaborations and genre aliases match; favorites outrank stronger contextual discovery', () => {
+  const songs = [sample(1, { artist: 'Other', genre: 'Pop' }), sample(2, { artist: 'One & Two', artists: [{ name: 'One' }, { name: 'Two' }], genre: 'hip-hop', moodScores: { Happy: .2 } })];
+  const out = recommend({ songs, mood: 'Happy', preferences: { artists: ['Two'], genres: ['Hip Hop'] }, limit: 2 });
+  assert.equal(out.songs[0].id, 2);
+  assert.equal(out.songs[0].components.artist, 1);
+  assert.equal(out.songs[0].components.genre, 1);
+  assert.equal(out.songs[1].discovery, true);
 });
 test('no match yields an empty result without relaxing mood or activity', () => {
   const out = recommend({ songs: catalog, mood: 'Unknown', activity: 'Study', preferences: { genres: ['Pop'] } });
@@ -60,5 +69,21 @@ test('unclassified imports are discoverable without context and excluded with co
   const songs=[sample(1,{moodScores:{},activityScores:{}})];
   assert.equal(recommend({songs}).songs.length,1);
   const out = recommend({songs,mood:'Happy'});
-  assert.equal(out.songs.length,0); assert.match(out.notices.join(' '),/lack selected context labels/);
+  assert.equal(out.songs.length,0); assert.match(out.notices.join(' '),/need context tags/);
+});
+
+test('unlabeled imported favorites are shown separately, never claimed to match selected context', () => {
+  const favorite = sample(1, { artist: 'Kishore Kumar', language: 'Unknown', moodScores: {}, activityScores: {} });
+  const other = sample(2, { artist: 'Other', moodScores: { Romantic: 1 }, activityScores: { Driving: 1 } });
+  const preferences = { artists: ['Kishore Kumar'], languages: ['Hindi'] };
+  const result = recommend({ songs: [favorite, other], mood: 'Romantic', activity: 'Driving', preferences });
+  assert.equal(result.unclassifiedFavoriteCount, 1);
+  assert.deepEqual(result.unclassifiedFavorites[0].missingLabels, ['mood', 'activity']);
+  assert.ok(!result.songs.some(s => s.id === 1));
+  const knownMismatch = { ...favorite, moodScores: { Energetic: 1 } };
+  assert.equal(recommend({ songs: [knownMismatch], mood: 'Romantic', activity: 'Driving', preferences }).unclassifiedFavoriteCount, 0);
+  const tagged = { ...favorite, language: 'Hindi', moodScores: { Romantic: 1 }, activityScores: { Driving: 1 } };
+  const after = recommend({ songs: [tagged, other], mood: 'Romantic', activity: 'Driving', preferences });
+  assert.equal(after.unclassifiedFavoriteCount, 0);
+  assert.equal(after.songs[0].id, 1);
 });

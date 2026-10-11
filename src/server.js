@@ -9,6 +9,8 @@ import { recommend } from './recommendation.js';
 import { createMusicBrainz, validMbid } from './musicbrainz.js';
 import { createDiscogs } from './discogs.js';
 import { extendedCatalog } from './extendedCatalog.js';
+import { cleanTrack, valuesFor } from './catalogQuality.js';
+import { ingestTrack } from './ingestion.js';
 
 const derive = promisify(scrypt);
 const hashToken = value => createHash('sha256').update(value).digest('hex');
@@ -115,7 +117,15 @@ export function createApp({ databasePath = process.env.DATABASE_URL || process.e
         res.setHeader('Set-Cookie', `mamrs_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureCookies ? '; Secure' : ''}`);
         return json(200, { ok: true });
       }
-      const allSongs = (await db.prepare('SELECT metadata FROM songs ORDER BY id').all()).map(s => JSON.parse(s.metadata));
+      const sourceField = db.isPostgres ? "metadata::jsonb ->> 'source'" : "json_extract(metadata, '$.source')";
+      const sharedField = db.isPostgres ? "metadata::jsonb ->> 'isCatalog' = 'true'" : "json_extract(metadata, '$.isCatalog') = 1";
+      const allSongs = (await db.prepare(`SELECT metadata FROM songs WHERE ${sourceField}='Editorial starter' OR ${sharedField}
+        OR id IN (SELECT song_id FROM user_songs WHERE user_id=?)
+        OR id IN (SELECT song_id FROM ratings WHERE user_id=?)
+        OR id IN (SELECT ps.song_id FROM playlist_songs ps JOIN playlists p ON p.id=ps.playlist_id WHERE p.user_id=?)
+        ORDER BY id`).all(uid, uid, uid)).map(s => JSON.parse(s.metadata)).map(s => {
+        try { return cleanTrack(s.isCatalog && !s.mbid && !s.discogsId ? { ...s, source: 'Editorial starter', tagSource: 'Editorial' } : s); } catch { return { ...s, catalogStatus: 'needs_review' }; }
+      });
       const owned = new Set((await db.prepare('SELECT song_id FROM user_songs WHERE user_id=?').all(uid)).map(r=>r.song_id));
       const annotations = new Map((await db.prepare('SELECT * FROM annotations WHERE user_id=?').all(uid)).map(r=>[r.song_id,r]));
       const songs = allSongs.filter(s => s.source === 'Editorial starter' || s.isCatalog || owned.has(s.id)).map(s => {
@@ -125,21 +135,15 @@ export function createApp({ databasePath = process.env.DATABASE_URL || process.e
       const options = {
         moods: (await db.prepare("SELECT name FROM taxonomy WHERE kind='mood'").all()).map(r => r.name),
         activities: (await db.prepare("SELECT name FROM taxonomy WHERE kind='activity'").all()).map(r => r.name),
-        ...Object.fromEntries(['genre', 'artist', 'language'].map(k => [`${k}s`, [...new Set(songs.map(s => s[k]))]])),
+        ...Object.fromEntries(['genre', 'artist', 'language'].map(k => [`${k}s`, [...new Set(songs.flatMap(s => [s[k], ...valuesFor(s, k)]).filter(Boolean))].sort()])),
       };
       if (req.method === 'GET' && path === '/api/options') return json(200, { ...options, catalogSize: songs.length });
       if (req.method === 'POST' && path === '/api/catalog/seed-dynamic') {
-        await db.exec('BEGIN');
         let added = 0;
-        try {
-          const insertSong = db.prepare('INSERT OR REPLACE INTO songs(id, metadata) VALUES (?, ?)');
-          const insertUser = db.prepare('INSERT OR IGNORE INTO user_songs(user_id, song_id) VALUES (?, ?)');
-          for (const song of extendedCatalog) {
-            await insertSong.run(song.id, JSON.stringify(song));
-            added += (await insertUser.run(uid, song.id)).changes;
-          }
-          await db.exec('COMMIT');
-        } catch (err) { await db.exec('ROLLBACK'); throw err; }
+        for (const raw of extendedCatalog) {
+          const song = { ...raw, source: 'Editorial starter', tagSource: 'Editorial', labelsReviewed: true, labelSource: 'Editorial' };
+          added += (await ingestTrack(db, song, { userId: uid, shared: true })).added;
+        }
         return json(200, { ok: true, added, total: extendedCatalog.length });
       }
       if (req.method === 'GET' && path === '/api/artists') {
@@ -153,40 +157,16 @@ export function createApp({ databasePath = process.env.DATABASE_URL || process.e
         const data = await readJson(req), offset = data.offset ?? 0;
         const provider = data.provider || 'musicbrainz';
         if (provider === 'discogs') {
-          if (!data.artistId || !String(data.artistId).trim()) fail(400, 'Invalid artist or page.');
+          if (!/^\d+$/.test(String(data.artistId)) || !Number.isInteger(offset) || offset < 0) fail(400, 'Invalid artist or page.');
           const page = await discogs.recordings(String(data.artistId), Number(offset) || 1);
           let added = 0;
-          await db.exec('BEGIN');
-          try {
-            for (const song of page.songs) {
-              let sid = (await db.prepare('SELECT song_id FROM discogs_songs WHERE discogs_id=?').get(song.discogsId))?.song_id;
-              if (!sid) {
-                sid = Number((await db.prepare('INSERT INTO songs(metadata) VALUES (?)').run('{}')).lastInsertRowid);
-                await db.prepare('UPDATE songs SET metadata=? WHERE id=?').run(JSON.stringify({ ...song, id: sid }), sid);
-                await db.prepare('INSERT INTO discogs_songs VALUES (?,?)').run(song.discogsId, sid);
-              }
-              added += (await db.prepare('INSERT OR IGNORE INTO user_songs VALUES (?,?)').run(uid, sid)).changes;
-            }
-            await db.exec('COMMIT');
-          } catch (err) { await db.exec('ROLLBACK'); throw err; }
+          for (const song of page.songs) added += (await ingestTrack(db, song, { userId: uid })).added;
           return json(200, { added, total: page.total, nextOffset: page.nextOffset, provider: 'discogs' });
         }
         if (!validMbid(data.artistId) || !Number.isInteger(offset) || offset < 0 || offset > 100000) fail(400, 'Invalid artist or page.');
         const page = await musicBrainz.recordings(data.artistId, offset);
         let added = 0;
-        await db.exec('BEGIN');
-        try {
-          for (const song of page.songs) {
-            let sid = (await db.prepare('SELECT song_id FROM provider_songs WHERE mbid=?').get(song.mbid))?.song_id;
-            if (!sid) {
-              sid = Number((await db.prepare('INSERT INTO songs(metadata) VALUES (?)').run('{}')).lastInsertRowid);
-              await db.prepare('UPDATE songs SET metadata=? WHERE id=?').run(JSON.stringify({ ...song, id:sid }),sid);
-              await db.prepare('INSERT INTO provider_songs VALUES (?,?)').run(song.mbid,sid);
-            }
-            added += (await db.prepare('INSERT OR IGNORE INTO user_songs VALUES (?,?)').run(uid,sid)).changes;
-          }
-          await db.exec('COMMIT');
-        } catch (err) { await db.exec('ROLLBACK'); throw err; }
+        for (const song of page.songs) added += (await ingestTrack(db, song, { userId: uid })).added;
         return json(200, { added, total:page.total, nextOffset:page.nextOffset, provider: 'musicbrainz' });
       }
       if (req.method === 'GET' && path === '/api/catalog') {
@@ -211,6 +191,8 @@ export function createApp({ databasePath = process.env.DATABASE_URL || process.e
           if (!Array.isArray(data[k]) || data[k].length > options[k].length || !data[k].every(v => options[k].includes(v))) fail(400, `Invalid ${k}.`);
           prefs[k] = [...new Set(data[k])];
         }
+        prefs.required = data.required ?? ['language'];
+        if (!Array.isArray(prefs.required) || !prefs.required.every(k => ['language', 'artist', 'genre'].includes(k))) fail(400, 'Invalid required preferences.');
         await db.prepare('UPDATE users SET preferences=? WHERE id=?').run(JSON.stringify(prefs), uid);
         return json(200, { preferences: prefs });
       }
@@ -250,29 +232,109 @@ export function createApp({ databasePath = process.env.DATABASE_URL || process.e
         await db.prepare("INSERT INTO actions(user_id,song_id,type) VALUES (?,?,'rate')").run(uid, data.songId);
         return json(200, { ok: true });
       }
+      async function importTrack(song) {
+        if (!song || typeof song !== 'object') fail(400, 'Invalid song data.');
+        // Re-fetch identifiers; browser-supplied credits, labels and publication flags are untrusted.
+        let trusted;
+        if (validMbid(song.mbid)) trusted = await musicBrainz.track(song.mbid);
+        else if (/^\d+:.+$/.test(song.discogsId || '')) trusted = await discogs.track(song.discogsId, song.discogsType || 'release');
+        else fail(400, 'Select a valid recording or individual release track.');
+        return (await ingestTrack(db, trusted, { userId: uid })).song;
+      }
+      if (req.method === 'GET' && path === '/api/songs/search') {
+        const query = (url.searchParams.get('q') || '').trim();
+        const provider = (url.searchParams.get('provider') || 'library').toLowerCase();
+        if (!query) return json(200, { songs: [], provider });
+        if (provider === 'musicbrainz') {
+          const results = await musicBrainz.searchRecordings(query);
+          return json(200, { songs: results, provider: 'musicbrainz' });
+        }
+        if (provider === 'discogs') {
+          const results = await discogs.searchTracks(query);
+          return json(200, { songs: results, provider: 'discogs' });
+        }
+        const q = query.toLowerCase();
+        const matches = songs.filter(s => (s.title + ' ' + s.artist + ' ' + (s.genre || '')).toLowerCase().includes(q));
+        return json(200, { songs: matches.slice(0, 30), provider: 'library' });
+      }
+      if (req.method === 'POST' && path === '/api/songs/import') {
+        const data = await readJson(req);
+        const imported = await importTrack(data.song);
+        return json(200, { song: imported });
+      }
       if (req.method === 'GET' && path === '/api/playlists') {
-        const pRows = await db.prepare('SELECT * FROM playlists WHERE user_id=? ORDER BY id DESC').all(uid);
+        const kindFilter = url.searchParams.get('kind');
+        let sql = 'SELECT * FROM playlists WHERE user_id=?';
+        const params = [uid];
+        if (kindFilter) {
+          sql += ' AND kind=?';
+          params.push(kindFilter);
+        }
+        sql += ' ORDER BY id DESC';
+        const pRows = await db.prepare(sql).all(...params);
         const playlists = await Promise.all(pRows.map(async p => {
           const songRows = await db.prepare('SELECT song_id FROM playlist_songs WHERE playlist_id=? ORDER BY position').all(p.id);
           return {
             ...p,
-            songs: songRows.map(r => songs.find(s => s.id === r.song_id) || allSongs.find(s => s.id === r.song_id)).filter(Boolean)
+            songs: (await Promise.all(songRows.map(async r => {
+              let s = songs.find(x => x.id === r.song_id) || allSongs.find(x => x.id === r.song_id);
+              if (!s) {
+                const row = await db.prepare('SELECT metadata FROM songs WHERE id=?').get(r.song_id);
+                if (row) s = JSON.parse(row.metadata);
+              }
+              return s;
+            }))).filter(Boolean)
           };
         }));
         return json(200, { playlists });
       }
       if (req.method === 'POST' && path === '/api/playlists') {
         const data = await readJson(req), name = text(data.name, 'playlist name', 80);
-        if (!Array.isArray(data.songIds) || !data.songIds.length || data.songIds.length > 100 || !data.songIds.every(id => Number.isInteger(id) && songs.some(s => s.id === id))) fail(400, 'Choose 1–100 valid songs.');
+        const songIds = Array.isArray(data.songIds) ? data.songIds : [];
+        const kind = data.kind === 'mix' ? 'mix' : 'playlist';
+        if (songIds.length > 100 || !songIds.every(id => Number.isInteger(id) && (songs.some(s => s.id === id) || allSongs.some(s => s.id === id)))) {
+          fail(400, 'Choose 0–100 valid songs.');
+        }
         await db.exec('BEGIN');
         try {
-          const id = Number((await db.prepare('INSERT INTO playlists(user_id,name) VALUES (?,?)').run(uid, name)).lastInsertRowid);
-          for (const [i, sid] of [...new Set(data.songIds)].entries()) {
+          const id = Number((await db.prepare('INSERT INTO playlists(user_id,name,kind) VALUES (?,?,?)').run(uid, name, kind)).lastInsertRowid);
+          for (const [i, sid] of [...new Set(songIds)].entries()) {
             await db.prepare('INSERT INTO playlist_songs VALUES (?,?,?)').run(id, sid, i);
           }
           await db.exec('COMMIT');
-          return json(201, { id, name });
+          return json(201, { id, name, kind });
         } catch (err) { await db.exec('ROLLBACK'); throw err; }
+      }
+      const playlistAddMatch = path.match(/^\/api\/playlists\/(\d+)\/songs$/);
+      if (req.method === 'POST' && playlistAddMatch) {
+        const playlistId = Number(playlistAddMatch[1]);
+        const playlist = await db.prepare('SELECT id FROM playlists WHERE id=? AND user_id=?').get(playlistId, uid);
+        if (!playlist) fail(404, 'Playlist not found.');
+        const data = await readJson(req);
+        let songId = data.songId;
+        if (!songId && data.song) {
+          const imported = await importTrack(data.song);
+          songId = imported.id;
+        }
+        let songExists = songs.some(s => s.id === songId) || allSongs.some(s => s.id === songId);
+        if (!songExists && songId) songExists = !!(await db.prepare('SELECT id FROM songs WHERE id=?').get(songId));
+        if (!Number.isInteger(songId) || !songExists) fail(400, 'Song does not exist.');
+        const existsInPlaylist = await db.prepare('SELECT song_id FROM playlist_songs WHERE playlist_id=? AND song_id=?').get(playlistId, songId);
+        if (!existsInPlaylist) {
+          const nextPosRow = await db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS next_pos FROM playlist_songs WHERE playlist_id=?').get(playlistId);
+          const nextPos = Number(nextPosRow?.next_pos || 0);
+          await db.prepare('INSERT INTO playlist_songs VALUES (?,?,?)').run(playlistId, songId, nextPos);
+        }
+        return json(200, { ok: true, songId, alreadyExists: !!existsInPlaylist });
+      }
+      const playlistSongRemoveMatch = path.match(/^\/api\/playlists\/(\d+)\/songs\/(\d+)$/);
+      if (req.method === 'DELETE' && playlistSongRemoveMatch) {
+        const playlistId = Number(playlistSongRemoveMatch[1]);
+        const songId = Number(playlistSongRemoveMatch[2]);
+        const playlist = await db.prepare('SELECT id FROM playlists WHERE id=? AND user_id=?').get(playlistId, uid);
+        if (!playlist) fail(404, 'Playlist not found.');
+        await db.prepare('DELETE FROM playlist_songs WHERE playlist_id=? AND song_id=?').run(playlistId, songId);
+        return json(200, { ok: true });
       }
       const playlistMatch = path.match(/^\/api\/playlists\/(\d+)$/);
       if (req.method === 'DELETE' && playlistMatch) {

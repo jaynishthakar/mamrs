@@ -1,0 +1,13 @@
+[
+  { "provider": "musicbrainz", "name": "Kishore Kumar", "country": "IN" },
+  { "provider": "musicbrainz", "name": "Arijit Singh", "country": "IN" },
+  { "provider": "musicbrainz", "name": "Shreya Ghoshal", "country": "IN" },
+  { "provider": "musicbrainz", "name": "Sonu Nigam", "country": "IN" },
+  { "provider": "musicbrainz", "name": "Diljit Dosanjh", "country": "IN" },
+  { "provider": "musicbrainz", "name": "AP Dhillon" },
+  { "provider": "musicbrainz", "name": "Anirudh Ravichander", "country": "IN" },
+  { "provider": "musicbrainz", "name": "Coldplay", "country": "GB" },
+  { "provider": "musicbrainz", "name": "Taylor Swift", "country": "US" },
+  { "provider": "musicbrainz", "name": "The Weeknd", "country": "CA" },
+  { "provider": "musicbrainz", "name": "Dua Lipa", "country": "GB" }
+]

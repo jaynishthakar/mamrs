@@ -5,13 +5,18 @@
   "type": "module",
   "description": "Mood and Action-Based Music Recommendation System",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.21.0"
   },
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test",
+    "test": "node scripts/test.js",
     "dev": "node --watch src/server.js",
-    "seed:tracks": "node scripts/fetch_tracks.js"
+    "seed:tracks": "node scripts/fetch_tracks.js",
+    "catalog:audit": "node scripts/catalog-maintenance.js audit",
+    "catalog:clean": "node scripts/catalog-maintenance.js clean",
+    "catalog:labels": "node scripts/catalog-maintenance.js labels",
+    "catalog:sync": "node scripts/catalog-worker.js",
+    "ingest": "node scripts/ingest.js"
   },
   "dependencies": {
     "pg": "^8.23.1"

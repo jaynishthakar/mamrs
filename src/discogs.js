@@ -34,7 +34,35 @@ export function createDiscogs({ fetcher = fetch, interval = 1100, ttl = 600000, 
     return task;
   }
 
+  async function releaseTracks(id, type = 'release') {
+    const release = await request(`${type === 'master' ? 'masters' : 'releases'}/${id}`);
+    if (type === 'master') {
+      if (!release.main_release) throw unavailable('Discogs master has no canonical release.');
+      return releaseTracks(release.main_release);
+    }
+    if (!Array.isArray(release.tracklist)) throw unavailable('Discogs returned a release without a tracklist.');
+    const flatten = tracks => tracks.flatMap(t => Array.isArray(t.sub_tracks) && t.sub_tracks.length ? flatten(t.sub_tracks) : [t]);
+    return flatten(release.tracklist).filter(t => t.type_ !== 'heading' && t.type_ !== 'index' && t.title && t.position).map(t => {
+      const credits = (t.artists?.length ? t.artists : release.artists || []).map(a => ({ id: String(a.id), name: (a.name || '').replace(/\s*\(\d+\)$/, ''), join: a.join || ', ' }));
+      const artists = credits.filter(a => a.name && a.name !== 'Various');
+      const duration = /^(\d+):([0-5]\d)$/.exec(t.duration || '');
+      return { discogsId: `${id}:${t.position}`, discogsType: type, discogsReleaseId: String(id), position: t.position,
+        title: t.title, artist: artists.map((a, i) => a.name + (i < artists.length - 1 ? ` ${a.join} ` : '')).join('') || 'Unknown artist',
+        artists: artists.map(a => ({ id: `discogs:${a.id}`, name: a.name })),
+        genres: [...(release.genres || []), ...(release.styles || [])], genre: release.genres?.[0] || 'Unknown', language: 'Unknown',
+        album: release.title || null, year: release.year || null, duration: duration ? Number(duration[1]) * 60 + Number(duration[2]) : null,
+        moodScores: {}, activityScores: {}, color: 'coral', source: 'Discogs', tagSource: 'Unclassified',
+        sourceUrl: `https://www.discogs.com/${type}/${id}`, catalogStatus: 'pending' };
+    });
+  }
   return {
+    async track(id, type = 'release') {
+      const match = /^(\d+):(.+)$/.exec(id || '');
+      if (!match || !['release', 'master'].includes(type)) throw Object.assign(new Error('Select an individual Discogs track.'), { status: 400 });
+      const song = (await releaseTracks(match[1], type)).find(s => s.position === match[2]);
+      if (!song) throw Object.assign(new Error('Track no longer exists in this release.'), { status: 400 });
+      return song;
+    },
     async searchArtists(query) {
       const data = await request('database/search', { q: query, type: 'artist', per_page: '10' });
       if (!Array.isArray(data.results)) throw unavailable('Discogs returned an invalid artist list. Retry later.');
@@ -48,25 +76,22 @@ export function createDiscogs({ fetcher = fetch, interval = 1100, ttl = 600000, 
         sourceUrl: `https://www.discogs.com/artist/${a.id}`,
       }));
     },
+    async searchTracks(query) {
+      const data = await request('database/search', { q: query, type: 'release', per_page: '15' });
+      if (!Array.isArray(data.results)) throw unavailable('Discogs returned an invalid search list. Retry later.');
+      const songs = [];
+      for (const release of data.results.filter(r => r.id).slice(0, 5)) songs.push(...await releaseTracks(release.id));
+      const needle = query.toLowerCase();
+      return songs.filter(s => `${s.title} ${s.artist}`.toLowerCase().includes(needle)).slice(0, 30);
+    },
     async recordings(artistId, page = 1) {
-      const data = await request(`artists/${artistId}/releases`, { page: String(page), per_page: '50', sort: 'year', sort_order: 'desc' });
+      const data = await request(`artists/${artistId}/releases`, { page: String(page), per_page: '5', sort: 'year', sort_order: 'desc' });
       if (!Array.isArray(data.releases) || !data.pagination) throw unavailable('Discogs returned an invalid release list. Retry later.');
-      const songs = data.releases.filter(r => r.id && r.title).map(r => ({
-        discogsId: String(r.id),
-        title: r.title,
-        artist: (r.artist || '').replace(/\s*\(\d+\)$/, '') || 'Unknown artist',
-        genre: Array.isArray(r.genre) && r.genre.length ? r.genre[0] : (Array.isArray(r.style) && r.style.length ? r.style[0] : 'Unknown'),
-        language: 'Unknown',
-        duration: null,
-        album: r.title,
-        year: r.year ? Number(r.year) : null,
-        moodScores: {},
-        activityScores: {},
-        color: 'coral',
-        source: 'Discogs',
-        tagSource: 'Unclassified',
-        sourceUrl: `https://www.discogs.com/${r.type === 'master' ? 'master' : 'release'}/${r.id}`,
-      }));
+      const songs = [];
+      for (const release of data.releases.filter(r => r.id)) {
+        const tracks = await releaseTracks(release.id, release.type === 'master' ? 'master' : 'release');
+        songs.push(...tracks.filter(s => s.artists.some(a => a.id === `discogs:${artistId}`)));
+      }
       const total = data.pagination.items || songs.length;
       const nextOffset = (data.pagination.page < data.pagination.pages) ? Number(page) + 1 : null;
       return { songs, total, nextOffset };

@@ -35,12 +35,21 @@ test('discogs provider caches and coalesces queries, sends identification, and s
   assert.ok(calls[1].time - calls[0].time >= 29);
 });
 
-test('discogs provider maps release metadata correctly and supports pagination', async () => {
+test('discogs expands masters, preserves recording credits and excludes unrelated compilation tracks', async () => {
   let requested;
   const provider = createDiscogs({
     interval: 0,
     fetcher: async (url) => {
       requested = url;
+      if (url.pathname === '/masters/999') return { ok: true, json: async () => ({ main_release: 888 }) };
+      if (url.pathname === '/releases/888') return { ok: true, json: async () => ({
+        title: 'Awesome Album', genres: ['Rock'], artists: [{ id: 1, name: 'Various' }],
+        tracklist: [
+          { type_: 'heading', title: 'Side A' },
+          { type_: 'track', position: 'A1', title: 'Actual Song', duration: '3:12', artists: [{ id: 1234, name: 'Band (1)' }] },
+          { type_: 'track', position: 'A2', title: 'Unrelated', artists: [{ id: 7, name: 'Other' }] }
+        ]
+      }) };
       return {
         ok: true,
         json: async () => ({
@@ -54,11 +63,15 @@ test('discogs provider maps release metadata correctly and supports pagination',
   });
 
   const out = await provider.recordings('1234', 1);
-  assert.equal(requested.pathname, '/artists/1234/releases');
+  assert.equal(requested.pathname, '/releases/888');
   assert.equal(out.nextOffset, 2);
   assert.equal(out.songs[0].artist, 'Band');
   assert.equal(out.songs[0].genre, 'Rock');
   assert.equal(out.songs[0].source, 'Discogs');
+  assert.equal(out.songs.length, 1);
+  assert.equal(out.songs[0].title, 'Actual Song');
+  assert.equal(out.songs[0].discogsId, '888:A1');
+  assert.equal(out.songs[0].duration, 192);
 });
 
 test('discogs upstream failures return retryable 503 errors and are not cached', async () => {

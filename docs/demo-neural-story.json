@@ -1,0 +1,14 @@
+[
+  "Hello. Welcome to M A M R S, the Mood and Action Based Music Recommendation System. It helps you discover songs for your mood and activity, using your saved music preferences. Let me show you how it works.",
+  "The two core modules are contextual recommendations, and ratings and feedback. The first matches preferences, mood, and activity to songs. The second stores feedback and uses it to influence future recommendations.",
+  "First, I choose Bollywood, Arijit Singh, and Hindi in Music preferences. These choices are saved for my account. Hindi remains a required language, while artist and genre matches help prioritize songs that suit my taste.",
+  "Next, I select Romantic as my mood and Driving as my activity. When I request music, the server loads my preferences, available songs, and ratings. The engine checks both context tags before ranking eligible tracks.",
+  "Tum Hi Ho appears first, followed by other matching songs. Preference matches take priority, then ranking points determine the order. Three songs qualify in this small demo catalog, and the application explains why the result set is smaller.",
+  "Why this track shows the context and preference matches behind each suggestion. Scores combine those signals with rating history and helpful feedback. They are rule based ranking points, rather than predictions from a trained machine learning model.",
+  "Now I give Tum Hi Ho five stars and mark it helpful. I can also leave a comment. The server checks that this account received the song as a recommendation, then saves the rating and feedback.",
+  "After the refresh, Tum Hi Ho rises from eighty six to ninety two points, with the same context and preferences. Feedback changes personal scoring components. Weights stay fixed, and comments are stored without sentiment analysis.",
+  "I save these recommendations as Romantic drive, then reopen them from Saved mixes. This keeps a snapshot of the song list for later. The project currently focuses on discovery and recommendations, with no streaming or downloads.",
+  "Recent moments stores recommendation contexts and timestamps. This follows the sequence: request songs, retrieve data, calculate results, save the event, and display recommendations. Revisiting a context generates a fresh mix.",
+  "Your catalog supports MusicBrainz and Discogs. The ingestion pipeline validates imports, removes duplicates, enriches metadata, and supports label review. Missing context labels stay unclassified until reliable evidence or review supplies them.",
+  "The recommendation and feedback loop works, with forty tests passing. Next come broader catalog coverage, reviewed labels, and relevance evaluation. Full Spotify coverage remains future work. Thank you."
+]

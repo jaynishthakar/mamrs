@@ -1,8 +1,11 @@
 import pg from 'pg';
 import { extendedCatalog, moods, activities } from './extendedCatalog.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { ingestionSchema } from './ingestion.js';
 
-export function createPgDatabase(connectionString = process.env.DATABASE_URL) {
-  const pool = new pg.Pool({
+export function createPgDatabase(connectionString = process.env.DATABASE_URL, { pool: injectedPool } = {}) {
+  const transactions = new AsyncLocalStorage();
+  const pool = injectedPool || new pg.Pool({
     connectionString,
     ssl: connectionString.includes('localhost') ? false : { rejectUnauthorized: false },
     max: 10,
@@ -47,7 +50,8 @@ export function createPgDatabase(connectionString = process.env.DATABASE_URL) {
         CREATE TABLE IF NOT EXISTS recommendations (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), mood TEXT, activity TEXT, result TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS ratings (user_id INTEGER NOT NULL REFERENCES users(id), song_id INTEGER NOT NULL REFERENCES songs(id), score INTEGER NOT NULL CHECK(score BETWEEN 1 AND 5), comment TEXT NOT NULL DEFAULT '', helpful INTEGER CHECK(helpful IN (0,1)), updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id,song_id));
         CREATE TABLE IF NOT EXISTS actions (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), song_id INTEGER REFERENCES songs(id), type TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
-        CREATE TABLE IF NOT EXISTS playlists (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), name TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS playlists (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'playlist', created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
+        ALTER TABLE playlists ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'playlist';
         CREATE TABLE IF NOT EXISTS playlist_songs (playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE, song_id INTEGER NOT NULL REFERENCES songs(id), position INTEGER NOT NULL, PRIMARY KEY(playlist_id,song_id));
         CREATE TABLE IF NOT EXISTS provider_songs (mbid TEXT PRIMARY KEY, song_id INTEGER NOT NULL UNIQUE REFERENCES songs(id));
         CREATE TABLE IF NOT EXISTS discogs_songs (discogs_id TEXT PRIMARY KEY, song_id INTEGER NOT NULL UNIQUE REFERENCES songs(id));
@@ -60,10 +64,11 @@ export function createPgDatabase(connectionString = process.env.DATABASE_URL) {
         ALTER TABLE songs ALTER COLUMN id SET DEFAULT nextval('songs_id_seq');
       `);
 
+      await client.query(ingestionSchema);
       const countRes = await client.query('SELECT count(*) as count FROM songs');
       if (parseInt(countRes.rows[0].count, 10) === 0) {
         for (const song of extendedCatalog) {
-          await client.query('INSERT INTO songs(id, metadata) VALUES ($1, $2) ON CONFLICT DO NOTHING', [song.id, JSON.stringify(song)]);
+          await client.query('INSERT INTO songs(id, metadata) VALUES ($1, $2) ON CONFLICT DO NOTHING', [song.id, JSON.stringify({ ...song, source: 'Editorial starter', tagSource: 'Editorial', labelSource: 'Editorial', labelsReviewed: true })]);
         }
       }
 
@@ -80,12 +85,23 @@ export function createPgDatabase(connectionString = process.env.DATABASE_URL) {
 
   return {
     isPostgres: true,
+    async withTransaction(task) {
+      await initPromise;
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await transactions.run(client, task);
+        await client.query('COMMIT');
+        return result;
+      } catch (error) { await client.query('ROLLBACK'); throw error; }
+      finally { client.release(); }
+    },
     async ready() {
       await initPromise;
     },
     async exec(sql) {
       await initPromise;
-      return pool.query(sql);
+      return (transactions.getStore() || pool).query(sql);
     },
     async close() {
       return pool.end();
@@ -96,7 +112,7 @@ export function createPgDatabase(connectionString = process.env.DATABASE_URL) {
         async run(...params) {
           await initPromise;
           try {
-            const res = await pool.query(text, params);
+            const res = await (transactions.getStore() || pool).query(text, params);
             const lastInsertRowid = res.rows && res.rows[0]?.id ? res.rows[0].id : null;
             return { changes: res.rowCount, lastInsertRowid };
           } catch (err) {
@@ -110,12 +126,12 @@ export function createPgDatabase(connectionString = process.env.DATABASE_URL) {
         },
         async get(...params) {
           await initPromise;
-          const res = await pool.query(text, params);
+          const res = await (transactions.getStore() || pool).query(text, params);
           return res.rows[0] || null;
         },
         async all(...params) {
           await initPromise;
-          const res = await pool.query(text, params);
+          const res = await (transactions.getStore() || pool).query(text, params);
           return res.rows;
         }
       };
